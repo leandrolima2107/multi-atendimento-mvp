@@ -1,0 +1,33 @@
+{
+  "name": "multi-atendimento",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,green \"npm run dev -w @multi/api\" \"npm run dev -w @multi/web\"",
+    "build": "npm run build -w @multi/api && npm run build -w @multi/web",
+    "lint": "npm run lint -w @multi/api && npm run lint -w @multi/web",
+    "typecheck": "npm run typecheck -w @multi/api && npm run typecheck -w @multi/web",
+    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:migrate:deploy": "prisma migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:migrate:status": "prisma migrate status --schema packages/db/prisma/schema.prisma",
+    "db:push": "prisma db push --schema packages/db/prisma/schema.prisma",
+    "db:seed": "tsx packages/db/prisma/seed.ts",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.7.4",
+    "prisma": "6.19.3",
+    "tsx": "^4.21.0",
+    "typescript-eslint": "^8.48.1",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3"
+  }
+}

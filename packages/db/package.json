@@ -1,0 +1,13 @@
+{
+  "name": "@multi/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "bcryptjs": "^3.0.3"
+  }
+}

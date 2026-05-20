@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-multi_atendimento}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  evolution-go:
+    # Pin EVOLUTION_IMAGE to a tested tag or digest before production hardening.
+    image: ${EVOLUTION_IMAGE:-evoapicloud/evolution-go:latest}
+    environment:
+      SERVER_PORT: 8080
+      CLIENT_NAME: ${EVOLUTION_CLIENT_NAME:-multi-atendimento}
+      GLOBAL_API_KEY: ${EVOLUTION_GLOBAL_API_KEY:-change-me}
+      POSTGRES_AUTH_DB: ${EVOLUTION_POSTGRES_AUTH_DB:-postgresql://postgres:postgres@postgres:5432/multi_atendimento?sslmode=disable}
+      POSTGRES_USERS_DB: ${EVOLUTION_POSTGRES_USERS_DB:-postgresql://postgres:postgres@postgres:5432/multi_atendimento?sslmode=disable}
+      DATABASE_SAVE_MESSAGES: ${EVOLUTION_DATABASE_SAVE_MESSAGES:-false}
+      AMQP_URL: ${EVOLUTION_AMQP_URL:-}
+      NATS_URL: ${EVOLUTION_NATS_URL:-}
+      WEBHOOK_URL: ${EVOLUTION_WEBHOOK_URL:-http://api:4000/webhooks/evolution}
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      API_PORT: 4000
+      DATABASE_URL: ${API_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/multi_atendimento?schema=public}
+      DIRECT_URL: ${DIRECT_URL:-postgresql://postgres:postgres@postgres:5432/multi_atendimento?schema=public}
+      REDIS_URL: ${API_REDIS_URL:-redis://redis:6379}
+      EVOLUTION_BASE_URL: ${EVOLUTION_BASE_URL:-http://evolution-go:8080}
+      EVOLUTION_GLOBAL_API_KEY: ${EVOLUTION_GLOBAL_API_KEY:-change-me}
+      API_HEALTH_PATH: ${API_HEALTH_PATH:-/health}
+    expose:
+      - "4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Expects the API to return HTTP 200 here.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${API_PORT:-4000}$${API_HEALTH_PATH:-/health} >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4100}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:4100}
+        NEXT_PUBLIC_EVOLUTION_MANAGER_URL: ${NEXT_PUBLIC_EVOLUTION_MANAGER_URL:-http://localhost:8082/manager}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      API_INTERNAL_URL: http://api:4000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4100}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:4100}
+      NEXT_PUBLIC_EVOLUTION_MANAGER_URL: ${NEXT_PUBLIC_EVOLUTION_MANAGER_URL:-http://localhost:8082/manager}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  redis_data:

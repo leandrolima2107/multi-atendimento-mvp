@@ -1,0 +1,29 @@
+services:
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  evolution-go:
+    restart: unless-stopped
+    ports:
+      - "${EVOLUTION_HOST_BIND:-127.0.0.1}:${EVOLUTION_HOST_PORT:-8082}:8080"
+
+  api:
+    env_file:
+      - ${ENV_FILE:-.env.production}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      DATABASE_URL: ${API_DATABASE_URL}
+      REDIS_URL: ${API_REDIS_URL:-redis://redis:6379}
+      EVOLUTION_BASE_URL: http://evolution-go:8080
+    ports:
+      - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-4100}:4000"
+
+  web:
+    restart: unless-stopped
+    ports:
+      - "${WEB_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-3000}:3000"

@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum PlatformRole {
+  USER
+  PLATFORM_ADMIN
+}
+
+enum CompanyRole {
+  COMPANY_ADMIN
+  AGENT
+}
+
+enum WhatsappProvider {
+  EVOLUTION_GO
+}
+
+enum WhatsappStatus {
+  CREATED
+  QR_PENDING
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum ConversationStatus {
+  QUEUED
+  OPEN
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+  SYSTEM
+}
+
+enum MessageType {
+  TEXT
+  MEDIA
+  AUDIO
+  IMAGE
+  DOCUMENT
+  SYSTEM
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  RECEIVED
+  FAILED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+}
+
+model Plan {
+  id                   String    @id @default(cuid())
+  name                 String
+  slug                 String    @unique
+  maxWhatsappInstances Int       @default(1)
+  maxUsers             Int       @default(5)
+  isActive             Boolean   @default(true)
+  companies            Company[]
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model Company {
+  id                 String             @id @default(cuid())
+  name               String
+  slug               String             @unique
+  status             CompanyStatus      @default(ACTIVE)
+  planId             String?
+  plan               Plan?              @relation(fields: [planId], references: [id])
+  members            CompanyMember[]
+  whatsappInstances  WhatsappInstance[]
+  leads              Lead[]
+  conversations      Conversation[]
+  messages           Message[]
+  tags               Tag[]
+  pipelineStages     PipelineStage[]
+  webhookEvents      WebhookEvent[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+}
+
+model User {
+  id           String          @id @default(cuid())
+  name         String
+  email        String          @unique
+  passwordHash String
+  platformRole PlatformRole    @default(USER)
+  isActive     Boolean         @default(true)
+  memberships  CompanyMember[]
+  assignments  Conversation[]  @relation("ConversationAssignee")
+  sentMessages Message[]       @relation("MessageSender")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model CompanyMember {
+  id        String      @id @default(cuid())
+  companyId String
+  userId    String
+  role      CompanyRole
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([companyId, userId])
+  @@index([userId])
+}
+
+model WhatsappInstance {
+  id            String             @id @default(cuid())
+  companyId     String
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider      WhatsappProvider   @default(EVOLUTION_GO)
+  name          String
+  instanceKey   String             @unique
+  providerInstanceId String?        @unique
+  apiKey        String?
+  webhookSecret String
+  phoneNumber   String?
+  status        WhatsappStatus     @default(CREATED)
+  qrCode        String?
+  lastError     String?
+  conversations Conversation[]
+  messages      Message[]
+  webhookEvents WebhookEvent[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([companyId])
+}
+
+model Lead {
+  id            String          @id @default(cuid())
+  companyId     String
+  company       Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name          String?
+  phone         String?
+  remoteJid     String
+  pipelineStageId String?
+  pipelineStage PipelineStage?  @relation(fields: [pipelineStageId], references: [id])
+  conversations Conversation[]
+  tags          LeadTag[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([companyId, remoteJid])
+  @@index([companyId, phone])
+}
+
+model Conversation {
+  id                 String              @id @default(cuid())
+  companyId          String
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId             String
+  lead               Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  whatsappInstanceId String
+  whatsappInstance   WhatsappInstance    @relation(fields: [whatsappInstanceId], references: [id], onDelete: Cascade)
+  status             ConversationStatus  @default(QUEUED)
+  assignedToId       String?
+  assignedTo         User?               @relation("ConversationAssignee", fields: [assignedToId], references: [id])
+  messages           Message[]
+  lastMessageAt      DateTime?
+  closedAt           DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([companyId, status])
+  @@index([assignedToId])
+}
+
+model Message {
+  id                 String            @id @default(cuid())
+  companyId          String
+  company            Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversationId     String
+  conversation       Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  whatsappInstanceId String
+  whatsappInstance   WhatsappInstance  @relation(fields: [whatsappInstanceId], references: [id], onDelete: Cascade)
+  senderId           String?
+  sender             User?             @relation("MessageSender", fields: [senderId], references: [id])
+  externalId         String?
+  idempotencyKey     String?           @unique
+  direction          MessageDirection
+  type               MessageType       @default(TEXT)
+  status             MessageStatus     @default(RECEIVED)
+  providerStatus     String?
+  body               String?
+  mediaUrl           String?
+  error              String?
+  raw                Json?
+  sentAt             DateTime?
+  deliveredAt        DateTime?
+  readAt             DateTime?
+  createdAt          DateTime          @default(now())
+
+  @@unique([companyId, externalId])
+  @@index([companyId, conversationId, createdAt])
+  @@index([companyId, status])
+}
+
+model PipelineStage {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String
+  position  Int
+  leads     Lead[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, position])
+}
+
+model Tag {
+  id        String    @id @default(cuid())
+  companyId String
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String
+  color     String    @default("#2563eb")
+  leads     LeadTag[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([companyId, name])
+}
+
+model LeadTag {
+  leadId String
+  tagId  String
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, tagId])
+}
+
+model WebhookEvent {
+  id                 String          @id @default(cuid())
+  companyId          String?
+  company            Company?        @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  whatsappInstanceId String?
+  whatsappInstance   WhatsappInstance? @relation(fields: [whatsappInstanceId], references: [id], onDelete: SetNull)
+  eventType          String
+  externalId         String?
+  status             WebhookStatus   @default(RECEIVED)
+  payload            Json
+  error              String?
+  processedAt        DateTime?
+  createdAt          DateTime        @default(now())
+
+  @@unique([whatsappInstanceId, eventType, externalId])
+  @@index([companyId, eventType])
+  @@index([status, createdAt])
+}
