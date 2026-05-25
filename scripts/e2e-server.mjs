@@ -121,6 +121,11 @@ async function startEvolutionMock() {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/instance/all') {
+      sendJson(200, { data: [], message: 'success' });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/instance/connect') {
       sendJson(200, { data: { eventString: 'MESSAGE,SEND_MESSAGE,CONNECTION,QRCODE' }, message: 'success' });
       return;

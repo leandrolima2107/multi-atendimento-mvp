@@ -18,6 +18,11 @@ type EvolutionCreateResult = {
   providerInstanceId?: string;
   token?: string;
 };
+type EvolutionRemoteInstance = {
+  id?: string;
+  name?: string;
+  token?: string;
+};
 type EvolutionConnectResult = {
   qrCode?: string | null;
 };
@@ -240,12 +245,18 @@ export class WhatsappService {
     webhookSecret?: string | null,
     phoneNumber?: string | null,
   ): Promise<EvolutionConnectResult | null> {
-    const auth = this.evolutionAuth(providerInstanceId, apiKey);
+    const auth = await this.ensureEvolutionInstance(
+      localId,
+      instanceKey,
+      providerInstanceId,
+      apiKey,
+    );
     if (!auth) {
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
         data: {
           status: "ERROR",
+          qrCode: null,
           lastError: "Configuração incompleta da Evolution Go para esta instância.",
         },
       });
@@ -253,51 +264,95 @@ export class WhatsappService {
     }
 
     try {
-      const connect = await axios.post(
-        `${auth.baseUrl}/instance/connect`,
-        {
-          webhookUrl: this.webhookUrl(localId, webhookSecret),
-          subscribe: [
-            "MESSAGE",
-            "SEND_MESSAGE",
-            "CONNECTION",
-            "QRCODE",
-            "READ_RECEIPT",
-          ],
-          immediate: true,
-          phone: phoneNumber || undefined,
-        },
-        {
-          headers: {
-            apikey: auth.authKey,
-            instanceId: auth.providerInstanceId,
-            "Content-Type": "application/json",
-          },
-          timeout: 10000,
-        },
+      return await this.connectEvolutionWithAuth(
+        localId,
+        instanceKey,
+        auth,
+        webhookSecret,
+        phoneNumber,
       );
-      const qrCode =
-        this.extractQrCode(connect.data) ??
-        (await this.fetchQrCodeWithRetry(auth, instanceKey));
+    } catch (error) {
+      if (this.shouldRecreateEvolutionInstance(error)) {
+        const recreatedAuth = await this.ensureEvolutionInstance(
+          localId,
+          instanceKey,
+          providerInstanceId,
+          apiKey,
+          true,
+        );
+
+        if (recreatedAuth) {
+          try {
+            return await this.connectEvolutionWithAuth(
+              localId,
+              instanceKey,
+              recreatedAuth,
+              webhookSecret,
+              phoneNumber,
+            );
+          } catch (retryError) {
+            error = retryError;
+          }
+        }
+      }
 
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
         data: {
-          status: qrCode ? "QR_PENDING" : "CREATED",
-          qrCode,
-          lastError: qrCode
-            ? null
-            : "Conexão iniciada. Aguarde o QR Code chegar pelo webhook.",
+          status: "ERROR",
+          qrCode: null,
+          lastError: this.errorMessage(error),
         },
-      });
-      return { qrCode };
-    } catch (error) {
-      await this.prisma.whatsappInstance.update({
-        where: { id: localId },
-        data: { status: "ERROR", lastError: this.errorMessage(error) },
       });
       return null;
     }
+  }
+
+  private async connectEvolutionWithAuth(
+    localId: string,
+    instanceKey: string,
+    auth: EvolutionAuth,
+    webhookSecret?: string | null,
+    phoneNumber?: string | null,
+  ) {
+    const connect = await axios.post(
+      `${auth.baseUrl}/instance/connect`,
+      {
+        webhookUrl: this.webhookUrl(localId, webhookSecret),
+        subscribe: [
+          "MESSAGE",
+          "SEND_MESSAGE",
+          "CONNECTION",
+          "QRCODE",
+          "READ_RECEIPT",
+        ],
+        immediate: true,
+        phone: phoneNumber || undefined,
+      },
+      {
+        headers: {
+          apikey: auth.authKey,
+          instanceId: auth.providerInstanceId,
+          "Content-Type": "application/json",
+        },
+        timeout: 10000,
+      },
+    );
+    const qrCode =
+      this.extractQrCode(connect.data) ??
+      (await this.fetchQrCodeWithRetry(auth, instanceKey));
+
+    await this.prisma.whatsappInstance.update({
+      where: { id: localId },
+      data: {
+        status: qrCode ? "QR_PENDING" : "CREATED",
+        qrCode,
+        lastError: qrCode
+          ? null
+          : "Conexão iniciada. Aguarde o QR Code chegar pelo webhook.",
+      },
+    });
+    return { qrCode };
   }
 
   private async refreshEvolutionStatus(localId: string) {
@@ -335,17 +390,149 @@ export class WhatsappService {
 
   private parseCreateResult(data: unknown): EvolutionCreateResult {
     const value = data as {
-      data?: { id?: string; token?: string; instance?: { id?: string } };
+      data?: {
+        id?: string;
+        token?: string;
+        instance?: { id?: string; token?: string };
+      };
       id?: string;
       token?: string;
-      instance?: { id?: string };
+      instance?: { id?: string; token?: string };
     };
 
     return {
       providerInstanceId:
         value.data?.id ?? value.data?.instance?.id ?? value.id ?? value.instance?.id,
-      token: value.data?.token ?? value.token,
+      token: value.data?.token ?? value.data?.instance?.token ?? value.token ?? value.instance?.token,
     };
+  }
+
+  private async ensureEvolutionInstance(
+    localId: string,
+    instanceKey: string,
+    providerInstanceId?: string | null,
+    apiKey?: string | null,
+    forceRecreate = false,
+  ): Promise<EvolutionAuth | null> {
+    const baseUrl = this.config.get<string>("EVOLUTION_BASE_URL");
+    const globalApiKey = this.config.get<string>("EVOLUTION_GLOBAL_API_KEY");
+
+    if (!baseUrl) {
+      return null;
+    }
+
+    if (!forceRecreate && providerInstanceId && (apiKey || globalApiKey)) {
+      return {
+        baseUrl,
+        authKey: apiKey || globalApiKey!,
+        providerInstanceId,
+      };
+    }
+
+    if (!globalApiKey) {
+      return null;
+    }
+
+    const remote = await this.findEvolutionInstance(
+      baseUrl,
+      globalApiKey,
+      instanceKey,
+      providerInstanceId,
+    );
+    if (remote?.id) {
+      const authKey = remote.token ?? apiKey ?? globalApiKey;
+      await this.prisma.whatsappInstance.update({
+        where: { id: localId },
+        data: {
+          providerInstanceId: remote.id,
+          apiKey: authKey,
+          lastError: null,
+        },
+      });
+      return { baseUrl, authKey, providerInstanceId: remote.id };
+    }
+
+    const token = apiKey || crypto.randomBytes(24).toString("hex");
+    const created = await this.tryCreateEvolutionInstance(instanceKey, token);
+    if (!created?.providerInstanceId) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: localId },
+        data: {
+          providerInstanceId: null,
+          qrCode: null,
+          status: "ERROR",
+          lastError:
+            "A Evolution Go não criou a instância. Confira a GLOBAL_API_KEY e tente novamente.",
+        },
+      });
+      return null;
+    }
+
+    const authKey = created.token ?? token;
+    await this.prisma.whatsappInstance.update({
+      where: { id: localId },
+      data: {
+        providerInstanceId: created.providerInstanceId,
+        apiKey: authKey,
+        lastError: null,
+      },
+    });
+
+    return {
+      baseUrl,
+      authKey,
+      providerInstanceId: created.providerInstanceId,
+    };
+  }
+
+  private async findEvolutionInstance(
+    baseUrl: string,
+    globalApiKey: string,
+    instanceKey: string,
+    providerInstanceId?: string | null,
+  ): Promise<EvolutionRemoteInstance | null> {
+    const response = await axios
+      .get(`${baseUrl}/instance/all`, {
+        headers: { apikey: globalApiKey },
+        timeout: 10000,
+      })
+      .catch(() => null);
+    const items = this.extractRemoteInstances(response?.data);
+
+    return (
+      items.find(
+        (item) =>
+          item.name === instanceKey ||
+          (providerInstanceId ? item.id === providerInstanceId : false),
+      ) ?? null
+    );
+  }
+
+  private extractRemoteInstances(data: unknown): EvolutionRemoteInstance[] {
+    const value = data as { data?: unknown; instances?: unknown } | unknown[];
+    const rows = Array.isArray(value)
+      ? value
+      : Array.isArray(value?.data)
+        ? value.data
+        : Array.isArray(value?.instances)
+          ? value.instances
+          : [];
+
+    return rows
+      .map((row) => {
+        const item = row as {
+          id?: unknown;
+          name?: unknown;
+          token?: unknown;
+          data?: { id?: unknown; name?: unknown; token?: unknown };
+        };
+        return {
+          id: this.stringOrUndefined(item.id ?? item.data?.id),
+          name: this.stringOrUndefined(item.name ?? item.data?.name),
+          token: this.stringOrUndefined(item.token ?? item.data?.token),
+        };
+      })
+      .filter((item) => item.id || item.name);
   }
 
   private async fetchQrCode(
@@ -515,6 +702,29 @@ export class WhatsappService {
     }
 
     return false;
+  }
+
+  private shouldRecreateEvolutionInstance(error: unknown) {
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+
+    const statusCode = error.response?.status;
+    const message = this.errorMessage(error).toLowerCase();
+    return (
+      statusCode === 401 ||
+      statusCode === 403 ||
+      statusCode === 404 ||
+      message.includes("not authorized") ||
+      message.includes("unauthorized") ||
+      message.includes("not found") ||
+      message.includes("instância não encontrada") ||
+      message.includes("instance not found")
+    );
+  }
+
+  private stringOrUndefined(value: unknown) {
+    return typeof value === "string" && value.trim() ? value : undefined;
   }
 
   private sleep(milliseconds: number) {

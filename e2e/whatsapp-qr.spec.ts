@@ -8,9 +8,9 @@ test('generates a WhatsApp QR code through the project API', async ({ request })
     where: { id: instance.id },
     data: {
       companyId: session.activeCompany!.id,
-      apiKey: 'e2e-instance-key',
-      providerInstanceId: 'e2e-provider-main',
-      status: 'CONNECTED',
+      apiKey: null,
+      providerInstanceId: null,
+      status: 'CREATED',
       qrCode: null,
       lastError: null,
     },
