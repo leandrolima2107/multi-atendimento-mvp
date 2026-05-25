@@ -17,15 +17,18 @@
     "db:migrate:status": "prisma migrate status --schema packages/db/prisma/schema.prisma",
     "db:push": "prisma db push --schema packages/db/prisma/schema.prisma",
     "db:seed": "tsx packages/db/prisma/seed.ts",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium",
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "concurrently": "^9.2.1",
     "prettier": "^3.7.4",
     "prisma": "6.19.3",
     "tsx": "^4.21.0",
-    "typescript-eslint": "^8.48.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1"
   },
   "dependencies": {
     "@prisma/client": "6.19.3"

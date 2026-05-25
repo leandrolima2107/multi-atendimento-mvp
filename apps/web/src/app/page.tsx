@@ -12,9 +12,11 @@ import {
   LogOut,
   MessageCircle,
   Plus,
+  QrCode,
   RotateCcw,
   Send,
   Settings,
+  Wifi,
   Users,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
@@ -81,6 +83,7 @@ type WhatsappInstance = {
   status: string;
   qrCode?: string | null;
   phoneNumber?: string | null;
+  lastError?: string | null;
 };
 
 type Tab = 'inbox' | 'leads' | 'whatsapp' | 'settings';
@@ -104,7 +107,10 @@ export default function Home() {
     if (!session?.activeCompany?.id) {
       return;
     }
-    const socket = io(WS_URL, { transports: ['websocket'] });
+    const socket = io(WS_URL, {
+      transports: ['websocket'],
+      auth: { token: session.accessToken },
+    });
     socket.emit('company:join', session.activeCompany.id);
     socket.on('message:new', () => window.dispatchEvent(new Event('multi:refresh')));
     socket.on('conversation:updated', () => window.dispatchEvent(new Event('multi:refresh')));
@@ -112,7 +118,7 @@ export default function Home() {
     return () => {
       socket.disconnect();
     };
-  }, [session?.activeCompany?.id]);
+  }, [session?.accessToken, session?.activeCompany?.id]);
 
   async function login(email: string, password: string) {
     setError('');
@@ -192,7 +198,7 @@ export default function Home() {
         <section className="workspace">
           {currentTab === 'inbox' && <InboxView session={session} />}
           {currentTab === 'leads' && <LeadsView token={session.accessToken} />}
-          {currentTab === 'whatsapp' && <WhatsappView token={session.accessToken} canManage={canManageWhatsapp} />}
+          {currentTab === 'whatsapp' && <WhatsappView token={session.accessToken} canManage={canManageWhatsapp} initialCompany={session.activeCompany} />}
           {currentTab === 'settings' && <SettingsView session={session} />}
         </section>
       </main>
@@ -693,19 +699,39 @@ function LeadsView({ token }: { token: string }) {
   );
 }
 
-function WhatsappView({ token, canManage }: { token: string; canManage: boolean }) {
+function WhatsappView({
+  token,
+  canManage,
+  initialCompany,
+}: {
+  token: string;
+  canManage: boolean;
+  initialCompany: Company | null;
+}) {
   const [instances, setInstances] = useState<WhatsappInstance[]>([]);
+  const [company, setCompany] = useState<Company | null>(initialCompany);
   const [name, setName] = useState('WhatsApp principal');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [actionPending, setActionPending] = useState('');
+  const usedInstances = company?._count?.whatsappInstances ?? instances.length;
+  const maxInstances = company?.plan?.maxWhatsappInstances ?? 1;
+  const remainingInstances = Math.max(maxInstances - usedInstances, 0);
+  const isLimitReached = remainingInstances === 0;
 
   async function load() {
     setIsLoading(true);
     setLoadError('');
     try {
-      setInstances(await api<WhatsappInstance[]>('/whatsapp/instances', token));
+      const [rows, overview] = await Promise.all([
+        api<WhatsappInstance[]>('/whatsapp/instances', token),
+        api<Company | null>('/companies/current', token).catch(() => null),
+      ]);
+      setInstances(rows);
+      setCompany(overview ?? initialCompany);
     } catch (err) {
       setLoadError(getErrorMessage(err, 'Não foi possível carregar as conexões do WhatsApp.'));
     } finally {
@@ -722,10 +748,19 @@ function WhatsappView({ token, canManage }: { token: string; canManage: boolean 
 
   async function create() {
     if (!canManage || !name.trim()) return;
+    if (isLimitReached) {
+      setActionError('O limite de números WhatsApp do plano foi atingido.');
+      return;
+    }
     setActionPending('create');
     setActionError('');
+    setActionNotice('');
     try {
-      await api('/whatsapp/instances', token, { method: 'POST', body: JSON.stringify({ name }) });
+      await api('/whatsapp/instances', token, {
+        method: 'POST',
+        body: JSON.stringify({ name, phoneNumber: phoneNumber.trim() || undefined }),
+      });
+      setPhoneNumber('');
       await load();
     } catch (err) {
       setActionError(getErrorMessage(err, 'Não foi possível criar a conexão.'));
@@ -734,15 +769,37 @@ function WhatsappView({ token, canManage }: { token: string; canManage: boolean 
     }
   }
 
-  async function connect(id: string) {
+  async function requestQrCode(instance: WhatsappInstance) {
     if (!canManage) return;
-    setActionPending(id);
+    if (instance.status === 'CONNECTED') {
+      const confirmed = window.confirm('Gerar um novo QR Code vai desconectar a sessão atual deste WhatsApp. Continuar?');
+      if (!confirmed) return;
+    }
+    setActionPending(`qr:${instance.id}`);
     setActionError('');
+    setActionNotice('');
     try {
-      await api(`/whatsapp/instances/${id}/connect`, token, { method: 'POST' });
+      const updated = await api<WhatsappInstance>(`/whatsapp/instances/${instance.id}/qrcode`, token, { method: 'POST' });
+      setInstances((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+      setActionNotice(updated.qrCode ? 'QR Code gerado. Escaneie pelo WhatsApp em Dispositivos conectados.' : 'Pedido enviado. Atualize em alguns segundos se o QR Code ainda não aparecer.');
       await load();
     } catch (err) {
-      setActionError(getErrorMessage(err, 'Não foi possível iniciar a conexão.'));
+      setActionError(getErrorMessage(err, 'Não foi possível gerar o QR Code.'));
+    } finally {
+      setActionPending('');
+    }
+  }
+
+  async function refresh(id: string) {
+    if (!canManage) return;
+    setActionPending(`refresh:${id}`);
+    setActionError('');
+    setActionNotice('');
+    try {
+      await api(`/whatsapp/instances/${id}`, token);
+      await load();
+    } catch (err) {
+      setActionError(getErrorMessage(err, 'Não foi possível atualizar o status.'));
     } finally {
       setActionPending('');
     }
@@ -750,10 +807,10 @@ function WhatsappView({ token, canManage }: { token: string; canManage: boolean 
 
   return (
     <section className="grid">
-      <div className="panel-header panel">
+      <div className="panel-header panel whatsapp-header">
         <div>
           <div className="panel-title">Conexões WhatsApp</div>
-          <div className="muted">Somente administradores da empresa podem criar ou conectar instâncias.</div>
+          <div className="muted">Crie a instância, gere o QR Code e acompanhe o status da conexão.</div>
         </div>
         {canManage && (
           <div className="row toolbar-row">
@@ -761,15 +818,33 @@ function WhatsappView({ token, canManage }: { token: string; canManage: boolean 
               Manager
             </a>
             <input className="input" value={name} onChange={(event) => setName(event.target.value)} aria-label="Nome da conexão" />
-            <button className="button" onClick={create} disabled={!name.trim() || actionPending === 'create'}>
+            <input
+              className="input"
+              value={phoneNumber}
+              onChange={(event) => setPhoneNumber(event.target.value)}
+              aria-label="Telefone com DDI"
+              placeholder="Telefone com DDI, opcional"
+            />
+            <button className="button" onClick={create} disabled={!name.trim() || isLimitReached || actionPending === 'create'}>
               {actionPending === 'create' ? <Loader2 className="spin" size={18} /> : <Plus size={18} />}
               Criar
             </button>
           </div>
         )}
       </div>
+      <div className="cards whatsapp-summary">
+        <Metric label="Plano" value={company?.plan?.name ?? 'Sem plano'} />
+        <Metric label="Números usados" value={`${usedInstances}/${maxInstances}`} />
+        <Metric label="Disponíveis" value={String(remainingInstances)} />
+      </div>
+      {isLimitReached && (
+        <InlineAlert>
+          Limite do plano atingido. Use a conexão existente ou ajuste o plano antes de criar outro número.
+        </InlineAlert>
+      )}
       {actionError && <InlineAlert tone="danger">{actionError}</InlineAlert>}
-      <div className="cards">
+      {actionNotice && <InlineAlert>{actionNotice}</InlineAlert>}
+      <div className="cards whatsapp-cards">
         {isLoading && <StateBlock icon={<Loader2 className="spin" size={20} />} title="Carregando conexões..." />}
         {loadError && <StateBlock icon={<AlertCircle size={20} />} title="Falha ao carregar conexões" description={loadError} />}
         {!isLoading && !loadError && instances.length === 0 && (
@@ -779,27 +854,43 @@ function WhatsappView({ token, canManage }: { token: string; canManage: boolean 
             description={canManage ? 'Crie uma conexão para gerar o QR Code e iniciar o atendimento.' : 'Peça para um administrador conectar o WhatsApp da empresa.'}
           />
         )}
-        {instances.map((instance) => (
-          <article className="card" key={instance.id}>
-            <div className="row">
-              <strong>{instance.name}</strong>
-              <span className={`badge ${instance.status === 'CONNECTED' ? 'green' : 'amber'}`}>{instance.status}</span>
-            </div>
-            <div className="muted">{instance.instanceKey}</div>
-            {instance.qrCode && <QrCodePreview value={instance.qrCode} />}
-            {canManage && (
-              <button className="button secondary card-action" onClick={() => connect(instance.id)} disabled={actionPending === instance.id}>
-                {actionPending === instance.id && <Loader2 className="spin" size={18} />}
-                Conectar / QR
-              </button>
-            )}
-          </article>
-        ))}
+        {instances.map((instance) => {
+          const statusMeta = whatsappStatusMeta(instance.status);
+          const isBusy = actionPending === `refresh:${instance.id}` || actionPending === `qr:${instance.id}`;
+
+          return (
+            <article className="card whatsapp-card" key={instance.id}>
+              <div className="row">
+                <strong>{instance.name}</strong>
+                <span className={`badge ${statusMeta.tone}`}>{statusMeta.label}</span>
+              </div>
+              <div className="muted">{instance.instanceKey}</div>
+              {instance.phoneNumber && <div className="muted">Telefone: {instance.phoneNumber}</div>}
+              <div className="instance-status-line">
+                <Wifi size={18} />
+                <span>{statusMeta.description}</span>
+              </div>
+              {instance.lastError && <InlineAlert tone="danger">{instance.lastError}</InlineAlert>}
+              {instance.qrCode && instance.status !== 'CONNECTED' && <QrCodePreview value={instance.qrCode} />}
+              {canManage && (
+                <div className="instance-actions">
+                  <button className="button secondary" onClick={() => refresh(instance.id)} disabled={isBusy}>
+                    {actionPending === `refresh:${instance.id}` ? <Loader2 className="spin" size={18} /> : <RotateCcw size={18} />}
+                    Atualizar
+                  </button>
+                  <button className="button" onClick={() => requestQrCode(instance)} disabled={isBusy}>
+                    {actionPending === `qr:${instance.id}` ? <Loader2 className="spin" size={18} /> : <QrCode size={18} />}
+                    {qrActionLabel(instance.status)}
+                  </button>
+                </div>
+              )}
+            </article>
+          );
+        })}
       </div>
     </section>
   );
 }
-
 function QrCodePreview({ value }: { value: string }) {
   const src = value.startsWith('data:image') ? value : `data:image/png;base64,${value}`;
 
@@ -916,6 +1007,49 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`badge ${badgeClass}`}>{statusLabel(status)}</span>;
 }
 
+function whatsappStatusMeta(status: string) {
+  const meta: Record<string, { label: string; description: string; tone: string }> = {
+    CREATED: {
+      label: 'Criada',
+      description: 'Instância criada. Gere o QR Code para parear o telefone.',
+      tone: 'amber',
+    },
+    QR_PENDING: {
+      label: 'Aguardando QR',
+      description: 'Escaneie o QR Code no WhatsApp para concluir a conexão.',
+      tone: 'amber',
+    },
+    CONNECTED: {
+      label: 'Conectada',
+      description: 'WhatsApp conectado e pronto para receber mensagens.',
+      tone: 'green',
+    },
+    DISCONNECTED: {
+      label: 'Desconectada',
+      description: 'A conexão caiu. Gere um novo QR Code para reconectar.',
+      tone: '',
+    },
+    ERROR: {
+      label: 'Erro',
+      description: 'A última tentativa falhou. Confira a mensagem e tente novamente.',
+      tone: 'danger',
+    },
+  };
+
+  return meta[status] ?? {
+    label: status,
+    description: 'Status recebido da Evolution Go.',
+    tone: 'amber',
+  };
+}
+
+function qrActionLabel(status: string) {
+  if (status === 'CONNECTED') return 'Gerar novo QR';
+  if (status === 'QR_PENDING') return 'Atualizar QR';
+  if (status === 'ERROR') return 'Gerar QR novamente';
+  return 'Gerar QR';
+}
+
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   return (
     <button className={active ? 'active' : ''} onClick={onClick} title={label}>
@@ -974,8 +1108,25 @@ async function api<T>(path: string, token: string, init: RequestInit = {}): Prom
   });
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new Error(await readApiError(response));
   }
 
   return response.json();
+}
+
+async function readApiError(response: Response) {
+  const text = await response.text();
+  if (!text.trim()) {
+    return `Erro ${response.status}`;
+  }
+
+  try {
+    const data = JSON.parse(text) as { message?: string | string[]; error?: string };
+    if (Array.isArray(data.message)) {
+      return data.message.join(' ');
+    }
+    return data.message ?? data.error ?? text;
+  } catch {
+    return text;
+  }
 }

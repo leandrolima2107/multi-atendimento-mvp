@@ -82,7 +82,7 @@ export class WebhookProcessor {
     const messagePayload = this.extractMessagePayload(payload);
     const remoteJid = messagePayload.remoteJid;
 
-    if (!remoteJid || remoteJid.endsWith('@g.us')) {
+    if (!remoteJid || messagePayload.isGroup || messagePayload.fromMe) {
       return;
     }
 
@@ -95,7 +95,7 @@ export class WebhookProcessor {
       }
     }
 
-    const phone = remoteJid.split('@')[0];
+    const phone = normalizePhoneFromJid(remoteJid);
     const lead = await this.prisma.lead.upsert({
       where: { companyId_remoteJid: { companyId, remoteJid } },
       update: {
@@ -120,7 +120,7 @@ export class WebhookProcessor {
           companyId,
           leadId: lead.id,
           whatsappInstanceId,
-          status: messagePayload.fromMe ? 'OPEN' : 'QUEUED',
+          status: 'QUEUED',
         },
       }));
 
@@ -130,9 +130,9 @@ export class WebhookProcessor {
         conversationId: conversation.id,
         whatsappInstanceId,
         externalId: messagePayload.externalId,
-        direction: messagePayload.fromMe ? 'OUTBOUND' : 'INBOUND',
+        direction: 'INBOUND',
         type: messagePayload.type,
-        status: messagePayload.fromMe ? 'SENT' : 'RECEIVED',
+        status: 'RECEIVED',
         providerStatus: messagePayload.providerStatus,
         body: messagePayload.body,
         mediaUrl: messagePayload.mediaUrl,
@@ -185,6 +185,12 @@ export class WebhookProcessor {
     const data = (payload.data as AnyRecord | undefined) ?? payload;
     const info = (data.Info as AnyRecord | undefined) ?? {};
     const key = (data.key as AnyRecord | undefined) ?? {};
+    const remoteJid =
+      stringOrUndefined(key.remoteJid) ??
+      stringOrUndefined(info.Chat) ??
+      stringOrUndefined(data.remoteJid) ??
+      stringOrUndefined(data.chatId) ??
+      stringOrUndefined(info.Sender);
     const message = (data.message as AnyRecord | undefined) ?? (data.Message as AnyRecord | undefined) ?? data;
     const text =
       stringOrUndefined(message.conversation) ??
@@ -202,8 +208,13 @@ export class WebhookProcessor {
 
     return {
       externalId: stringOrUndefined(key.id) ?? stringOrUndefined(info.ID) ?? stringOrUndefined(data.id),
-      remoteJid: stringOrUndefined(key.remoteJid) ?? stringOrUndefined(info.Sender) ?? stringOrUndefined(data.remoteJid),
-      fromMe: Boolean(key.fromMe ?? info.IsFromMe ?? data.fromMe),
+      remoteJid,
+      fromMe: booleanValue(key.fromMe ?? info.IsFromMe ?? data.fromMe),
+      isGroup:
+        isGroupJid(remoteJid) ||
+        booleanValue(info.IsGroup ?? data.isGroup) ||
+        isGroupJid(stringOrUndefined(info.Chat)) ||
+        isGroupJid(stringOrUndefined(data.chatId)),
       pushName: stringOrUndefined(data.pushName) ?? stringOrUndefined(info.PushName) ?? stringOrUndefined(data.name),
       body: text,
       mediaUrl,
@@ -215,6 +226,24 @@ export class WebhookProcessor {
 
 function stringOrUndefined(value: unknown) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function booleanValue(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return ['true', '1', 'yes'].includes(value.toLowerCase());
+  }
+  return Boolean(value);
+}
+
+function isGroupJid(value?: string) {
+  return Boolean(value?.includes('@g.us'));
+}
+
+function normalizePhoneFromJid(remoteJid: string) {
+  return remoteJid.split('@')[0].split(':')[0];
 }
 
 function mapProviderStatus(status?: string) {

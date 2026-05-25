@@ -215,6 +215,11 @@ input:focus-visible {
   color: #8a5a00;
 }
 
+.badge.danger {
+  background: #fff0ed;
+  color: var(--danger);
+}
+
 .filter-bar {
   display: flex;
   gap: 8px;
@@ -371,12 +376,65 @@ input:focus-visible {
 }
 
 .toolbar-row {
-  flex: 1 1 360px;
-  max-width: 520px;
+  flex: 1 1 620px;
+  max-width: 860px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbar-row .input {
+  flex: 1 1 220px;
+  min-width: min(220px, 100%);
 }
 
 .card-action {
   margin-top: 12px;
+}
+
+.whatsapp-summary {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.whatsapp-cards {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.whatsapp-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.whatsapp-card .inline-alert {
+  margin: 0;
+}
+
+.instance-status-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f7faf8;
+  color: #34403c;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.instance-status-line svg {
+  flex: 0 0 auto;
+  color: var(--brand);
+}
+
+.instance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.instance-actions .button {
+  flex: 1 1 150px;
 }
 
 .qr-frame {
@@ -390,7 +448,7 @@ input:focus-visible {
 }
 
 .qr-frame img {
-  width: 220px;
+  width: 260px;
   max-width: 100%;
   height: auto;
 }
@@ -505,6 +563,11 @@ input:focus-visible {
   .toolbar-row {
     flex-direction: column;
     max-width: none;
+  }
+
+  .whatsapp-summary,
+  .whatsapp-cards {
+    grid-template-columns: 1fr;
   }
 
   .thread {

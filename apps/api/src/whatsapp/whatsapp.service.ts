@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { WhatsappInstance } from "@prisma/client";
+import { Prisma, WhatsappInstance } from "@prisma/client";
 import axios from "axios";
 import crypto from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
@@ -17,6 +17,14 @@ type SafeWhatsappInstance = Omit<
 type EvolutionCreateResult = {
   providerInstanceId?: string;
   token?: string;
+};
+type EvolutionConnectResult = {
+  qrCode?: string | null;
+};
+type EvolutionAuth = {
+  baseUrl: string;
+  authKey: string;
+  providerInstanceId: string;
 };
 
 @Injectable()
@@ -36,67 +44,121 @@ export class WhatsappService {
   }
 
   async create(companyId: string, dto: CreateWhatsappInstanceDto) {
-    const company = await this.prisma.company.findUniqueOrThrow({
-      where: { id: companyId },
-      include: { plan: true, _count: { select: { whatsappInstances: true } } },
-    });
+    const { instance, apiKey } = await this.prisma.$transaction(
+      async (tx) => {
+        const company = await tx.company.findUniqueOrThrow({
+          where: { id: companyId },
+          include: {
+            plan: true,
+            _count: { select: { whatsappInstances: true } },
+          },
+        });
 
-    const limit = company.plan?.maxWhatsappInstances ?? 1;
-    if (company._count.whatsappInstances >= limit) {
-      throw new BadRequestException(
-        "Limite de números WhatsApp do plano atingido.",
-      );
-    }
+        const limit = company.plan?.maxWhatsappInstances ?? 1;
+        if (company._count.whatsappInstances >= limit) {
+          throw new BadRequestException(
+            "Limite de números WhatsApp do plano atingido.",
+          );
+        }
 
-    const instanceKey = `${company.slug}-${crypto.randomBytes(4).toString("hex")}`;
-    const webhookSecret = crypto.randomBytes(24).toString("hex");
-    const apiKey = crypto.randomBytes(24).toString("hex");
-    const webhookUrl = `${this.config.get("WEBHOOK_PUBLIC_URL", "http://localhost:4000/webhooks/evolution")}/${instanceKey}?secret=${webhookSecret}`;
+        const instanceKey = `${company.slug}-${crypto.randomBytes(4).toString("hex")}`;
+        const webhookSecret = crypto.randomBytes(24).toString("hex");
+        const apiKey = crypto.randomBytes(24).toString("hex");
+        const instance = await tx.whatsappInstance.create({
+          data: {
+            companyId,
+            name: dto.name,
+            phoneNumber: dto.phoneNumber,
+            instanceKey,
+            webhookSecret,
+            apiKey,
+            status: "CREATED",
+          },
+        });
 
-    const instance = await this.prisma.whatsappInstance.create({
-      data: {
-        companyId,
-        name: dto.name,
-        phoneNumber: dto.phoneNumber,
-        instanceKey,
-        webhookSecret,
-        apiKey,
-        status: "CREATED",
+        return { instance, apiKey };
       },
-    });
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
 
-    const evolution = await this.tryCreateEvolutionInstance(instanceKey, apiKey);
+    const evolution = await this.tryCreateEvolutionInstance(
+      instance.instanceKey,
+      apiKey,
+    );
     const updated = await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
       data: {
         providerInstanceId: evolution?.providerInstanceId,
         apiKey: evolution?.token ?? apiKey,
+        lastError: evolution
+          ? null
+          : "Instância criada localmente, mas a Evolution Go não confirmou a criação.",
       },
     });
 
-    void webhookUrl;
     return this.sanitizeInstance(updated);
   }
 
   async connect(companyId: string, id: string) {
     const instance = await this.getOwned(companyId, id);
-    const qrCode = await this.tryConnectEvolutionInstance(
+    if (instance.status === "CONNECTED") {
+      await this.refreshEvolutionStatus(instance.id);
+      const current = await this.getOwned(companyId, id);
+      if (current.status === "CONNECTED") {
+        return this.sanitizeInstance(current);
+      }
+    }
+
+    await this.tryConnectEvolutionInstance(
       instance.id,
+      instance.instanceKey,
       instance.providerInstanceId,
       instance.apiKey ?? undefined,
       instance.webhookSecret,
       instance.phoneNumber,
     );
 
-    const refreshed = await this.refreshEvolutionStatus(instance.id);
-    const updated = refreshed
+    const updated = await this.getOwned(companyId, id);
+    return this.sanitizeInstance(updated);
+  }
+
+  async requestQrCode(companyId: string, id: string) {
+    const instance = await this.getOwned(companyId, id);
+    const shouldLogout = instance.status === "CONNECTED";
+
+    if (shouldLogout) {
+      const loggedOut = await this.tryLogoutEvolutionInstance(instance);
+      if (!loggedOut) {
+        const updated = await this.prisma.whatsappInstance.update({
+          where: { id },
+          data: {
+            status: "ERROR",
+            qrCode: null,
+            lastError:
+              "Não foi possível desconectar a sessão atual para gerar um novo QR Code.",
+          },
+        });
+        return this.sanitizeInstance(updated);
+      }
+    }
+
+    const connection = await this.tryConnectEvolutionInstance(
+      instance.id,
+      instance.instanceKey,
+      instance.providerInstanceId,
+      instance.apiKey ?? undefined,
+      instance.webhookSecret,
+      instance.phoneNumber,
+    );
+
+    const updated = connection
       ? await this.getOwned(companyId, id)
       : await this.prisma.whatsappInstance.update({
           where: { id },
           data: {
-            status: qrCode ? "QR_PENDING" : "CREATED",
-            qrCode,
-            lastError: null,
+            status: "ERROR",
+            qrCode: null,
+            lastError: "Não foi possível iniciar a geração do QR Code.",
           },
         });
 
@@ -104,9 +166,10 @@ export class WhatsappService {
   }
 
   async refreshStatus(companyId: string, id: string) {
-    await this.refreshEvolutionStatus(id);
     const instance = await this.getOwned(companyId, id);
-    return this.sanitizeInstance(instance);
+    await this.refreshEvolutionStatus(instance.id);
+    const updated = await this.getOwned(companyId, id);
+    return this.sanitizeInstance(updated);
   }
 
   async markConnection(
@@ -171,19 +234,27 @@ export class WhatsappService {
 
   private async tryConnectEvolutionInstance(
     localId: string,
+    instanceKey: string,
     providerInstanceId?: string | null,
     apiKey?: string | null,
     webhookSecret?: string | null,
     phoneNumber?: string | null,
-  ) {
-    const baseUrl = this.config.get<string>("EVOLUTION_BASE_URL");
-    if (!baseUrl || !apiKey || !providerInstanceId) {
+  ): Promise<EvolutionConnectResult | null> {
+    const auth = this.evolutionAuth(providerInstanceId, apiKey);
+    if (!auth) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: localId },
+        data: {
+          status: "ERROR",
+          lastError: "Configuração incompleta da Evolution Go para esta instância.",
+        },
+      });
       return null;
     }
 
     try {
-      await axios.post(
-        `${baseUrl}/instance/connect`,
+      const connect = await axios.post(
+        `${auth.baseUrl}/instance/connect`,
         {
           webhookUrl: this.webhookUrl(localId, webhookSecret),
           subscribe: [
@@ -197,15 +268,29 @@ export class WhatsappService {
           phone: phoneNumber || undefined,
         },
         {
-          headers: { apikey: apiKey, instanceId: providerInstanceId },
+          headers: {
+            apikey: auth.authKey,
+            instanceId: auth.providerInstanceId,
+            "Content-Type": "application/json",
+          },
           timeout: 10000,
         },
       );
-      const qr = await axios.get(`${baseUrl}/instance/qr`, {
-        headers: { apikey: apiKey, instanceId: providerInstanceId },
-        timeout: 10000,
+      const qrCode =
+        this.extractQrCode(connect.data) ??
+        (await this.fetchQrCodeWithRetry(auth, instanceKey));
+
+      await this.prisma.whatsappInstance.update({
+        where: { id: localId },
+        data: {
+          status: qrCode ? "QR_PENDING" : "CREATED",
+          qrCode,
+          lastError: qrCode
+            ? null
+            : "Conexão iniciada. Aguarde o QR Code chegar pelo webhook.",
+        },
       });
-      return qr.data?.data?.code ?? qr.data?.data?.qrcode ?? null;
+      return { qrCode };
     } catch (error) {
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
@@ -219,22 +304,17 @@ export class WhatsappService {
     const instance = await this.prisma.whatsappInstance.findUnique({
       where: { id: localId },
     });
-    const baseUrl = this.config.get<string>("EVOLUTION_BASE_URL");
-    if (!instance?.apiKey || !instance.providerInstanceId || !baseUrl) {
+    const auth = this.evolutionAuth(
+      instance?.providerInstanceId,
+      instance?.apiKey,
+    );
+    if (!instance || !auth) {
       return false;
     }
 
     try {
-      const response = await axios.get(`${baseUrl}/instance/status`, {
-        headers: {
-          apikey: instance.apiKey,
-          instanceId: instance.providerInstanceId,
-        },
-        timeout: 10000,
-      });
-      const connected = Boolean(
-        response.data?.data?.Connected ?? response.data?.data?.connected,
-      );
+      const response = await this.fetchStatus(auth, instance.instanceKey);
+      const connected = this.isConnected(response.data);
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
         data: {
@@ -268,6 +348,115 @@ export class WhatsappService {
     };
   }
 
+  private async fetchQrCode(
+    auth: EvolutionAuth,
+    instanceKey: string,
+  ) {
+    const headers = { apikey: auth.authKey, instanceId: auth.providerInstanceId };
+    const byName = await axios
+      .get(`${auth.baseUrl}/instance/${encodeURIComponent(instanceKey)}/qrcode`, {
+        headers,
+        timeout: 10000,
+      })
+      .catch(() => null);
+
+    const fallback = byName
+      ? null
+      : await axios
+          .get(`${auth.baseUrl}/instance/qr`, {
+            headers,
+            timeout: 10000,
+          })
+          .catch(() => null);
+
+    return this.extractQrCode(byName?.data ?? fallback?.data);
+  }
+
+  private async fetchQrCodeWithRetry(auth: EvolutionAuth, instanceKey: string) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const qrCode = await this.fetchQrCode(auth, instanceKey);
+      if (qrCode) {
+        return qrCode;
+      }
+      await this.sleep(750);
+    }
+    return null;
+  }
+
+  private fetchStatus(auth: EvolutionAuth, instanceKey: string) {
+    const headers = { apikey: auth.authKey, instanceId: auth.providerInstanceId };
+    return axios
+      .get(`${auth.baseUrl}/instance/${encodeURIComponent(instanceKey)}/status`, {
+        headers,
+        timeout: 10000,
+      })
+      .catch(() =>
+        axios.get(`${auth.baseUrl}/instance/status`, {
+          headers,
+          timeout: 10000,
+        }),
+      );
+  }
+
+  private extractQrCode(data: unknown) {
+    const value = data as {
+      code?: string;
+      qrcode?: string;
+      Qrcode?: string;
+      qrCode?: string;
+      QRCode?: string;
+      data?: {
+        code?: string;
+        Code?: string;
+        qrcode?: string;
+        Qrcode?: string;
+        qrCode?: string;
+        QRCode?: string;
+      };
+    } | null;
+
+    return (
+      value?.data?.qrcode ??
+      value?.data?.Qrcode ??
+      value?.data?.qrCode ??
+      value?.data?.QRCode ??
+      value?.data?.code ??
+      value?.data?.Code ??
+      value?.qrcode ??
+      value?.Qrcode ??
+      value?.qrCode ??
+      value?.QRCode ??
+      value?.code ??
+      null
+    );
+  }
+
+  private isConnected(data: unknown) {
+    const value = data as {
+      connected?: boolean;
+      Connected?: boolean;
+      status?: string;
+      state?: string;
+      data?: {
+        connected?: boolean;
+        Connected?: boolean;
+        status?: string;
+        state?: string;
+      };
+    } | null;
+    const status = String(
+      value?.data?.status ?? value?.data?.state ?? value?.status ?? value?.state ?? "",
+    ).toUpperCase();
+
+    const explicit =
+      value?.data?.Connected ??
+      value?.data?.connected ??
+      value?.Connected ??
+      value?.connected;
+
+    return Boolean(explicit ?? (status.includes("CONNECTED") || status.includes("OPEN")));
+  }
+
   private webhookUrl(localId: string, webhookSecret?: string | null) {
     const baseWebhook = this.config.get(
       "WEBHOOK_PUBLIC_URL",
@@ -276,11 +465,75 @@ export class WhatsappService {
     return `${baseWebhook}/${localId}?secret=${webhookSecret ?? ""}`;
   }
 
+  private evolutionAuth(
+    providerInstanceId?: string | null,
+    apiKey?: string | null,
+  ): EvolutionAuth | null {
+    const baseUrl = this.config.get<string>("EVOLUTION_BASE_URL");
+    const globalApiKey = this.config.get<string>("EVOLUTION_GLOBAL_API_KEY");
+    const authKey = apiKey || globalApiKey;
+    if (!baseUrl || !authKey || !providerInstanceId) {
+      return null;
+    }
+
+    return { baseUrl, authKey, providerInstanceId };
+  }
+
+  private async tryLogoutEvolutionInstance(instance: WhatsappInstance) {
+    const auth = this.evolutionAuth(
+      instance.providerInstanceId,
+      instance.apiKey,
+    );
+    if (!auth) {
+      return false;
+    }
+
+    const headers = { apikey: auth.authKey, instanceId: auth.providerInstanceId };
+    const logout = await axios
+      .delete(`${auth.baseUrl}/instance/logout`, { headers, timeout: 10000 })
+      .catch(() => null);
+    if (logout) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: instance.id },
+        data: { status: "DISCONNECTED", qrCode: null, lastError: null },
+      });
+      return true;
+    }
+
+    const disconnect = await axios
+      .post(`${auth.baseUrl}/instance/disconnect`, null, {
+        headers,
+        timeout: 10000,
+      })
+      .catch(() => null);
+    if (disconnect) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: instance.id },
+        data: { status: "DISCONNECTED", qrCode: null, lastError: null },
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  private sleep(milliseconds: number) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
   private errorMessage(error: unknown) {
     if (axios.isAxiosError(error)) {
-      return error.response?.data
-        ? JSON.stringify(error.response.data)
-        : error.message;
+      const data = error.response?.data as
+        | { message?: string | string[]; error?: string }
+        | string
+        | undefined;
+      if (typeof data === "string") {
+        return data;
+      }
+      if (Array.isArray(data?.message)) {
+        return data.message.join(" ");
+      }
+      return data?.message ?? data?.error ?? error.message;
     }
     return error instanceof Error ? error.message : "Erro desconhecido.";
   }

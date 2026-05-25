@@ -38,6 +38,12 @@ export class WhatsappController {
   }
 
   @Roles("COMPANY_ADMIN")
+  @Post("instances/:id/qrcode")
+  requestQrCode(@CurrentUser() user: AuthUser, @Param("id") id: string) {
+    return this.whatsapp.requestQrCode(user.companyId!, id);
+  }
+
+  @Roles("COMPANY_ADMIN")
   @Get("instances/:id")
   status(@CurrentUser() user: AuthUser, @Param("id") id: string) {
     return this.whatsapp.refreshStatus(user.companyId!, id);
