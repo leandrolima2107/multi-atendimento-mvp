@@ -718,9 +718,10 @@ function WhatsappView({
   const [actionNotice, setActionNotice] = useState('');
   const [actionPending, setActionPending] = useState('');
   const usedInstances = company?._count?.whatsappInstances ?? instances.length;
-  const maxInstances = company?.plan?.maxWhatsappInstances ?? 1;
+  const maxInstances = company?.plan?.maxWhatsappInstances ?? 0;
   const remainingInstances = Math.max(maxInstances - usedInstances, 0);
-  const isLimitReached = remainingInstances === 0;
+  const hasPlan = Boolean(company?.plan);
+  const isLimitReached = !hasPlan || remainingInstances === 0;
 
   async function load() {
     setIsLoading(true);
@@ -748,6 +749,10 @@ function WhatsappView({
 
   async function create() {
     if (!canManage || !name.trim()) return;
+    if (!hasPlan) {
+      setActionError('Defina um plano para a empresa antes de criar números WhatsApp.');
+      return;
+    }
     if (isLimitReached) {
       setActionError('O limite de números WhatsApp do plano foi atingido.');
       return;
@@ -779,7 +784,7 @@ function WhatsappView({
     setActionError('');
     setActionNotice('');
     try {
-      const updated = await api<WhatsappInstance>(`/whatsapp/instances/${instance.id}/qrcode`, token, { method: 'POST' });
+      const updated = await requestInstanceQrCode(instance.id, token);
       setInstances((current) => current.map((row) => (row.id === updated.id ? updated : row)));
       setActionNotice(updated.qrCode ? 'QR Code gerado. Escaneie pelo WhatsApp em Dispositivos conectados.' : 'Pedido enviado. Atualize em alguns segundos se o QR Code ainda não aparecer.');
       await load();
@@ -839,7 +844,9 @@ function WhatsappView({
       </div>
       {isLimitReached && (
         <InlineAlert>
-          Limite do plano atingido. Use a conexão existente ou ajuste o plano antes de criar outro número.
+          {hasPlan
+            ? 'Limite do plano atingido. Use a conexão existente ou ajuste o plano antes de criar outro número.'
+            : 'Defina um plano para a empresa antes de criar números WhatsApp.'}
         </InlineAlert>
       )}
       {actionError && <InlineAlert tone="danger">{actionError}</InlineAlert>}
@@ -1112,6 +1119,19 @@ async function api<T>(path: string, token: string, init: RequestInit = {}): Prom
   }
 
   return response.json();
+}
+
+async function requestInstanceQrCode(id: string, token: string) {
+  try {
+    return await api<WhatsappInstance>(`/whatsapp/instances/${id}/qrcode`, token, { method: 'POST' });
+  } catch (error) {
+    const message = getErrorMessage(error, '');
+    if (!message.includes('Cannot POST') && !message.includes('/qrcode') && !message.includes('404')) {
+      throw error;
+    }
+
+    return api<WhatsappInstance>(`/whatsapp/instances/${id}/connect`, token, { method: 'POST' });
+  }
 }
 
 async function readApiError(response: Response) {
