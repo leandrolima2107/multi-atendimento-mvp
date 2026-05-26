@@ -408,12 +408,16 @@ export class WhatsappService {
     try {
       const response = await this.fetchStatus(auth, instance.instanceKey);
       const connected = this.isConnected(response.data);
+      const qrCode = connected ? null : this.extractQrCode(response.data);
+      const disconnectReason = connected
+        ? null
+        : this.extractDisconnectReason(response.data);
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
         data: {
-          status: connected ? "CONNECTED" : "DISCONNECTED",
-          qrCode: connected ? null : instance.qrCode,
-          lastError: null,
+          status: connected ? "CONNECTED" : qrCode ? "QR_PENDING" : "DISCONNECTED",
+          qrCode,
+          lastError: disconnectReason,
         },
       });
       return true;
@@ -679,7 +683,38 @@ export class WhatsappService {
       value?.Connected ??
       value?.connected;
 
-    return Boolean(explicit ?? (status.includes("CONNECTED") || status.includes("OPEN")));
+    if (typeof explicit === "boolean") {
+      return explicit;
+    }
+
+    return ["CONNECTED", "OPEN", "ONLINE"].includes(status);
+  }
+
+  private extractDisconnectReason(data: unknown) {
+    const value = data as {
+      disconnect_reason?: unknown;
+      disconnectReason?: unknown;
+      reason?: unknown;
+      error?: unknown;
+      data?: {
+        disconnect_reason?: unknown;
+        disconnectReason?: unknown;
+        reason?: unknown;
+        error?: unknown;
+      };
+    } | null;
+
+    return (
+      this.stringOrUndefined(value?.data?.disconnect_reason) ??
+      this.stringOrUndefined(value?.data?.disconnectReason) ??
+      this.stringOrUndefined(value?.data?.reason) ??
+      this.stringOrUndefined(value?.data?.error) ??
+      this.stringOrUndefined(value?.disconnect_reason) ??
+      this.stringOrUndefined(value?.disconnectReason) ??
+      this.stringOrUndefined(value?.reason) ??
+      this.stringOrUndefined(value?.error) ??
+      null
+    );
   }
 
   private async webhookUrl(localId: string, webhookSecret?: string | null) {

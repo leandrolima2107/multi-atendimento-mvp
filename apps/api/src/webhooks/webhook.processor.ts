@@ -70,10 +70,16 @@ export class WebhookProcessor {
     }
     const data = payload.data as AnyRecord | undefined;
     const state = String(data?.state ?? data?.status ?? payload.status ?? payload.event ?? '').toUpperCase();
-    const status = state.includes('OPEN') || state.includes('CONNECTED') ? 'CONNECTED' : 'DISCONNECTED';
+    const status = ['OPEN', 'CONNECTED', 'ONLINE'].includes(state) ? 'CONNECTED' : 'DISCONNECTED';
+    const disconnectReason =
+      status === 'CONNECTED'
+        ? null
+        : stringOrUndefined(data?.disconnect_reason) ??
+          stringOrUndefined(data?.disconnectReason) ??
+          stringOrUndefined(data?.reason);
     const instance = await this.prisma.whatsappInstance.update({
       where: { id: instanceId },
-      data: { status, qrCode: status === 'CONNECTED' ? null : undefined },
+      data: { status, qrCode: status === 'CONNECTED' ? null : undefined, lastError: disconnectReason },
     });
     this.realtime.emitToCompany(instance.companyId, 'whatsapp:status', instance);
   }

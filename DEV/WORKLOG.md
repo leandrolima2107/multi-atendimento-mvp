@@ -40,3 +40,16 @@ Verificação:
 - `npm run e2e -- e2e/platform-settings.spec.ts e2e/webhooks.spec.ts e2e/inbox-flow.spec.ts e2e/whatsapp-qr.spec.ts`
 
 Próximo contexto: aplicar a migration `20260526000000_platform_settings` no ambiente persistente antes de usar a nova tela em produção/piloto.
+
+## 2026-05-25 - Correção de falso conectado na Evolution
+
+Mudança: corrigido o mapeamento de estado da Evolution para não considerar `DISCONNECTED` como conectado por conter a substring `CONNECTED`. O refresh de status agora limpa QR antigo quando não há QR válido e preserva o motivo de desconexão informado pela Evolution. Webhooks de conexão também salvam o motivo da desconexão.
+
+Motivo: a tela mostrava o WhatsApp como conectado mesmo sem leitura do QR Code; a Evolution real informava `connected: false` e `QR code limit reached (5)`.
+
+Verificação:
+- `npm run typecheck`
+- `npm run lint`
+- `npm run e2e -- e2e/whatsapp-qr.spec.ts e2e/webhooks.spec.ts`
+
+Próximo contexto: para gerar QR novo depois de `QR code limit reached (5)`, pode ser necessário recriar a instância remota ou resetar a sessão na Evolution.

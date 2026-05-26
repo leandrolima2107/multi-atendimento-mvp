@@ -112,3 +112,30 @@ test('creates one inbound conversation and dedupes repeated external id', async 
   expect(message?.conversation.status).toBe('QUEUED');
   expect(message?.conversation.lead.phone).toBe(phone);
 });
+
+test('maps disconnected connection events without false connected status', async ({ request }) => {
+  const instance = await getSeedWhatsappInstance();
+  await prisma.whatsappInstance.update({
+    where: { id: instance.id },
+    data: { status: 'CONNECTED', qrCode: null, lastError: null },
+  });
+
+  await postEvolutionWebhook(request, {
+    event: 'Connection',
+    data: {
+      state: 'DISCONNECTED',
+      reason: 'QR code limit reached (5)',
+      id: uniqueId('connection'),
+    },
+  });
+
+  await expect
+    .poll(async () => {
+      const updated = await prisma.whatsappInstance.findUnique({ where: { id: instance.id } });
+      return updated?.status;
+    })
+    .toBe('DISCONNECTED');
+
+  const updated = await prisma.whatsappInstance.findUnique({ where: { id: instance.id } });
+  expect(updated?.lastError).toBe('QR code limit reached (5)');
+});
