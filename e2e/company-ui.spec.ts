@@ -22,7 +22,7 @@ test('navigates through company MVP screens', async ({ page }) => {
   await page.getByRole('button', { name: 'WhatsApp' }).click();
   await expect(page.getByText('Conexões WhatsApp')).toBeVisible();
   await expect(page.getByText('Starter')).toBeVisible();
-  await expect(page.getByText('Números usados')).toBeVisible();
+  await expect(page.getByText('Conexões usadas')).toBeVisible();
   await expect(page.getByText('1/1')).toBeVisible();
   await expect(page.getByText('Limite do plano atingido.')).toBeVisible();
   await expect(page.getByText('WhatsApp principal')).toBeVisible();

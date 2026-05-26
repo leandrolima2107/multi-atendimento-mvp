@@ -1,5 +1,19 @@
 # Worklog
 
+## 2026-05-26 - Status de QR pendente na Evolution
+
+Mudança: ajustado o refresh de status do WhatsApp para tratar `Connected=true` com `LoggedIn=false` como conexão ainda não autenticada, mantendo a instância em QR pendente em vez de marcar como conectada. O refresh agora preserva o QR Code já salvo quando a Evolution não retorna um novo QR, e a falha ao pedir QR não sobrescreve um erro específico com mensagem genérica. A tela e as mensagens de plano passaram a chamar o limite de “conexões WhatsApp”, porque o slot é consumido pela instância criada, mesmo antes do pareamento.
+
+Motivo: a Evolution pode informar transporte conectado enquanto o WhatsApp ainda não foi pareado. Isso fazia a tela sugerir conexão ativa sem leitura do QR Code e podia apagar o QR exibido após uma atualização.
+
+Verificação:
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`
+- Regressão direta via `npx tsx` para `Connected=true` + `LoggedIn=false`
+
+Bloqueio: `npm run e2e -- e2e/whatsapp-qr.spec.ts e2e/webhooks.spec.ts` não concluiu porque o Docker Desktop não estava disponível (`dockerDesktopLinuxEngine` ausente). O teste E2E de regressão foi adicionado e fica pronto para rodar quando o Docker estiver iniciado.
+
 ## 2026-05-24 - Planos e limites SaaS
 
 Mudança: ajuste da regra de planos para bloquear empresa suspensa, plano inativo e empresa sem plano na criação de WhatsApp; criação de empresa agora rejeita plano inexistente/inativo; criação de plano retorna conflito amigável para identificador duplicado; UI deixa de assumir limite padrão quando não há plano; E2E cobre lista de planos, acesso indevido, limite de WhatsApp, empresa sem plano e empresa suspensa.

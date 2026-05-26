@@ -25,7 +25,7 @@ test('rejects creating another WhatsApp instance after the plan limit is reached
   });
 
   expect(response.status()).toBe(400);
-  expect(await response.text()).toContain('Limite de números WhatsApp do plano atingido.');
+  expect(await response.text()).toContain('Limite de conexões WhatsApp do plano atingido.');
 });
 
 test('requires a company plan before creating WhatsApp instances', async ({ request }) => {
@@ -60,7 +60,7 @@ test('requires a company plan before creating WhatsApp instances', async ({ requ
   });
 
   expect(response.status()).toBe(400);
-  expect(await response.text()).toContain('Defina um plano para a empresa antes de criar números WhatsApp.');
+  expect(await response.text()).toContain('Defina um plano para a empresa antes de criar conexões WhatsApp.');
 });
 
 test('blocks login for suspended companies', async ({ request }) => {

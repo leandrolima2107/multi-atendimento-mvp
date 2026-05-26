@@ -84,7 +84,7 @@ export class WhatsappService {
 
         if (!company.plan) {
           throw new BadRequestException(
-            "Defina um plano para a empresa antes de criar números WhatsApp.",
+            "Defina um plano para a empresa antes de criar conexões WhatsApp.",
           );
         }
 
@@ -95,7 +95,7 @@ export class WhatsappService {
         const limit = company.plan.maxWhatsappInstances;
         if (company._count.whatsappInstances >= limit) {
           throw new BadRequestException(
-            "Limite de números WhatsApp do plano atingido.",
+            "Limite de conexões WhatsApp do plano atingido.",
           );
         }
 
@@ -191,14 +191,17 @@ export class WhatsappService {
 
     const updated = connection
       ? await this.getOwned(companyId, id)
-      : await this.prisma.whatsappInstance.update({
-          where: { id },
-          data: {
-            status: "ERROR",
-            qrCode: null,
-            lastError: "Não foi possível iniciar a geração do QR Code.",
-          },
-        });
+      : await this.getOwned(companyId, id).then((failed) =>
+          this.prisma.whatsappInstance.update({
+            where: { id },
+            data: {
+              status: "ERROR",
+              lastError:
+                failed.lastError ??
+                "Não foi possível iniciar a geração do QR Code.",
+            },
+          }),
+        );
 
     return this.sanitizeInstance(updated);
   }
@@ -408,7 +411,8 @@ export class WhatsappService {
     try {
       const response = await this.fetchStatus(auth, instance.instanceKey);
       const connected = this.isConnected(response.data);
-      const qrCode = connected ? null : this.extractQrCode(response.data);
+      const freshQrCode = connected ? null : this.extractQrCode(response.data);
+      const qrCode = connected ? null : freshQrCode ?? instance.qrCode;
       const disconnectReason = connected
         ? null
         : this.extractDisconnectReason(response.data);
@@ -664,11 +668,15 @@ export class WhatsappService {
     const value = data as {
       connected?: boolean;
       Connected?: boolean;
+      loggedIn?: boolean;
+      LoggedIn?: boolean;
       status?: string;
       state?: string;
       data?: {
         connected?: boolean;
         Connected?: boolean;
+        loggedIn?: boolean;
+        LoggedIn?: boolean;
         status?: string;
         state?: string;
       };
@@ -682,6 +690,16 @@ export class WhatsappService {
       value?.data?.connected ??
       value?.Connected ??
       value?.connected;
+
+    const loggedIn =
+      value?.data?.LoggedIn ??
+      value?.data?.loggedIn ??
+      value?.LoggedIn ??
+      value?.loggedIn;
+
+    if (loggedIn === false) {
+      return false;
+    }
 
     if (typeof explicit === "boolean") {
       return explicit;

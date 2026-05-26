@@ -140,6 +140,11 @@ async function startEvolutionMock() {
     }
 
     if (request.method === 'GET' && url.pathname.includes('/status')) {
+      if (request.headers.instanceid === 'e2e-provider-not-logged-in') {
+        sendJson(200, { data: { Connected: true, LoggedIn: false, status: 'CONNECTED' }, message: 'success' });
+        return;
+      }
+
       sendJson(200, { data: { connected: false, status: 'DISCONNECTED' }, message: 'success' });
       return;
     }

@@ -887,11 +887,11 @@ function WhatsappView({
   async function create() {
     if (!canManage || !name.trim()) return;
     if (!hasPlan) {
-      setActionError('Defina um plano para a empresa antes de criar números WhatsApp.');
+      setActionError('Defina um plano para a empresa antes de criar conexões WhatsApp.');
       return;
     }
     if (isLimitReached) {
-      setActionError('O limite de números WhatsApp do plano foi atingido.');
+      setActionError('O limite de conexões WhatsApp do plano foi atingido.');
       return;
     }
     setActionPending('create');
@@ -976,14 +976,14 @@ function WhatsappView({
       </div>
       <div className="cards whatsapp-summary">
         <Metric label="Plano" value={company?.plan?.name ?? 'Sem plano'} />
-        <Metric label="Números usados" value={`${usedInstances}/${maxInstances}`} />
+        <Metric label="Conexões usadas" value={`${usedInstances}/${maxInstances}`} />
         <Metric label="Disponíveis" value={String(remainingInstances)} />
       </div>
       {isLimitReached && (
         <InlineAlert>
           {hasPlan
             ? 'Limite do plano atingido. Use a conexão existente ou ajuste o plano antes de criar outro número.'
-            : 'Defina um plano para a empresa antes de criar números WhatsApp.'}
+            : 'Defina um plano para a empresa antes de criar conexões WhatsApp.'}
         </InlineAlert>
       )}
       {actionError && <InlineAlert tone="danger">{actionError}</InlineAlert>}
