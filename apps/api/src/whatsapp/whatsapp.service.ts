@@ -8,6 +8,7 @@ import { Prisma, WhatsappInstance } from "@prisma/client";
 import axios from "axios";
 import crypto from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
+import { SettingsService } from "../settings/settings.service";
 import { CreateWhatsappInstanceDto } from "./whatsapp.dto";
 
 type SafeWhatsappInstance = Omit<
@@ -32,11 +33,29 @@ type EvolutionAuth = {
   providerInstanceId: string;
 };
 
+const EVOLUTION_WEBHOOK_EVENTS = [
+  "MESSAGE",
+  "SEND_MESSAGE",
+  "CONNECTION",
+  "QRCODE",
+  "READ_RECEIPT",
+];
+
+const EVOLUTION_ADVANCED_SETTINGS = {
+  alwaysOnline: false,
+  ignoreGroups: true,
+  ignoreStatus: true,
+  msgRejectCall: "Atendimento por chamada não disponível neste canal.",
+  readMessages: false,
+  rejectCall: true,
+};
+
 @Injectable()
 export class WhatsappService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   async list(companyId: string) {
@@ -59,7 +78,21 @@ export class WhatsappService {
           },
         });
 
-        const limit = company.plan?.maxWhatsappInstances ?? 1;
+        if (company.status === "SUSPENDED") {
+          throw new BadRequestException("Empresa suspensa.");
+        }
+
+        if (!company.plan) {
+          throw new BadRequestException(
+            "Defina um plano para a empresa antes de criar números WhatsApp.",
+          );
+        }
+
+        if (!company.plan.isActive) {
+          throw new BadRequestException("Plano da empresa está inativo.");
+        }
+
+        const limit = company.plan.maxWhatsappInstances;
         if (company._count.whatsappInstances >= limit) {
           throw new BadRequestException(
             "Limite de números WhatsApp do plano atingido.",
@@ -315,17 +348,22 @@ export class WhatsappService {
     webhookSecret?: string | null,
     phoneNumber?: string | null,
   ) {
+    const webhookUrl = await this.webhookUrl(localId, webhookSecret);
+    const reachabilityError = this.webhookReachabilityError(
+      auth.baseUrl,
+      webhookUrl,
+    );
+    if (reachabilityError) {
+      throw new Error(reachabilityError);
+    }
+
+    await this.tryConfigureEvolutionAdvancedSettings(localId, auth);
+
     const connect = await axios.post(
       `${auth.baseUrl}/instance/connect`,
       {
-        webhookUrl: this.webhookUrl(localId, webhookSecret),
-        subscribe: [
-          "MESSAGE",
-          "SEND_MESSAGE",
-          "CONNECTION",
-          "QRCODE",
-          "READ_RECEIPT",
-        ],
+        webhookUrl,
+        subscribe: EVOLUTION_WEBHOOK_EVENTS,
         immediate: true,
         phone: phoneNumber || undefined,
       },
@@ -644,12 +682,92 @@ export class WhatsappService {
     return Boolean(explicit ?? (status.includes("CONNECTED") || status.includes("OPEN")));
   }
 
-  private webhookUrl(localId: string, webhookSecret?: string | null) {
-    const baseWebhook = this.config.get(
-      "WEBHOOK_PUBLIC_URL",
-      "http://localhost:4000/webhooks/evolution",
-    );
+  private async webhookUrl(localId: string, webhookSecret?: string | null) {
+    const baseWebhook = await this.settings.getEvolutionWebhookPublicUrl();
     return `${baseWebhook}/${localId}?secret=${webhookSecret ?? ""}`;
+  }
+
+  private async tryConfigureEvolutionAdvancedSettings(
+    localId: string,
+    auth: EvolutionAuth,
+  ) {
+    try {
+      await axios.put(
+        `${auth.baseUrl}/instance/${auth.providerInstanceId}/advanced-settings`,
+        EVOLUTION_ADVANCED_SETTINGS,
+        {
+          headers: {
+            apikey: auth.authKey,
+            "Content-Type": "application/json",
+          },
+          timeout: 10000,
+        },
+      );
+      return true;
+    } catch (error) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: localId },
+        data: {
+          lastError: `A Evolution Go não confirmou as configurações avançadas: ${this.errorMessage(error)}`,
+        },
+      });
+      return false;
+    }
+  }
+
+  private webhookReachabilityError(evolutionBaseUrl: string, webhookUrl: string) {
+    const evolutionHost = this.hostname(evolutionBaseUrl);
+    const webhookHost = this.hostname(webhookUrl);
+
+    if (!evolutionHost || !webhookHost) {
+      return "URL pública do webhook inválida.";
+    }
+
+    if (this.isInternalHost(webhookHost) && !this.isInternalHost(evolutionHost)) {
+      return "WEBHOOK_PUBLIC_URL aponta para uma URL local/interna, mas a Evolution Go configurada é remota. Configure uma URL pública da API antes de conectar a instância.";
+    }
+
+    return null;
+  }
+
+  private hostname(value: string) {
+    try {
+      return new URL(value).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  }
+
+  private isLocalHost(hostname: string) {
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname.endsWith(".localhost")
+    );
+  }
+
+  private isInternalHost(hostname: string) {
+    return (
+      this.isLocalHost(hostname) ||
+      hostname === "host.docker.internal" ||
+      !hostname.includes(".") ||
+      this.isPrivateIpv4(hostname)
+    );
+  }
+
+  private isPrivateIpv4(hostname: string) {
+    const parts = hostname.split(".").map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) {
+      return false;
+    }
+
+    const [first, second] = parts;
+    return (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
   }
 
   private evolutionAuth(

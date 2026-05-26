@@ -7,6 +7,7 @@ import { InboxModule } from './inbox/inbox.module';
 import { LeadsModule } from './leads/leads.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { SettingsModule } from './settings/settings.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { HealthController } from './health.controller';
@@ -25,6 +26,7 @@ import { requiredConfig } from './config';
     }),
     PrismaModule,
     RealtimeModule,
+    SettingsModule,
     AuthModule,
     CompaniesModule,
     WhatsappModule,

@@ -50,6 +50,17 @@ type Plan = {
   isActive: boolean;
 };
 
+type PlatformSettings = {
+  evolutionWebhook: {
+    publicUrl: string;
+    source: 'DATABASE' | 'ENV' | 'DEFAULT';
+    updatedAt?: string | null;
+    lastSyncedUrl?: string | null;
+    lastSyncStatus?: string | null;
+    lastSyncAt?: string | null;
+  };
+};
+
 type Conversation = {
   id: string;
   status: string;
@@ -87,7 +98,7 @@ type WhatsappInstance = {
 };
 
 type Tab = 'inbox' | 'leads' | 'whatsapp' | 'settings';
-type PlatformTab = 'companies' | 'plans';
+type PlatformTab = 'companies' | 'plans' | 'settings';
 type ConversationStatusFilter = 'ALL' | 'QUEUED' | 'OPEN' | 'CLOSED';
 
 export default function Home() {
@@ -221,6 +232,7 @@ function PlatformShell({ session, onLogout }: { session: Session; onLogout: () =
         <nav className="nav">
           <NavButton active={tab === 'companies'} icon={<Building2 size={18} />} label="Empresas" onClick={() => setTab('companies')} />
           <NavButton active={tab === 'plans'} icon={<CreditCard size={18} />} label="Planos" onClick={() => setTab('plans')} />
+          <NavButton active={tab === 'settings'} icon={<Settings size={18} />} label="Configurações" onClick={() => setTab('settings')} />
         </nav>
       </aside>
       <main className="main">
@@ -237,6 +249,7 @@ function PlatformShell({ session, onLogout }: { session: Session; onLogout: () =
         <section className="workspace">
           {tab === 'companies' && <PlatformCompaniesView token={session.accessToken} />}
           {tab === 'plans' && <PlatformPlansView token={session.accessToken} />}
+          {tab === 'settings' && <PlatformSettingsView token={session.accessToken} />}
         </section>
       </main>
     </div>
@@ -362,6 +375,130 @@ function PlatformPlansView({ token }: { token: string }) {
             </div>
           </article>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function PlatformSettingsView({ token }: { token: string }) {
+  const [settings, setSettings] = useState<PlatformSettings | null>(null);
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    async function loadSettings() {
+      setIsLoading(true);
+      setLoadError('');
+      try {
+        const data = await api<PlatformSettings>('/settings/platform', token);
+        setSettings(data);
+        setWebhookUrl(data.evolutionWebhook.publicUrl);
+      } catch (err) {
+        setLoadError(getErrorMessage(err, 'Não foi possível carregar as configurações.'));
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadSettings();
+  }, [token]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setIsSaving(true);
+    setActionError('');
+    setNotice('');
+    try {
+      const data = await api<PlatformSettings & { sync?: { ok?: boolean; error?: string } }>('/settings/platform/evolution-webhook', token, {
+        method: 'PUT',
+        body: JSON.stringify({ webhookPublicUrl: webhookUrl }),
+      });
+      setSettings(data);
+      setWebhookUrl(data.evolutionWebhook.publicUrl);
+      setNotice(data.sync?.ok ? 'Webhook atualizado na Evolution.' : data.sync?.error ?? 'URL salva. Sincronização pendente.');
+    } catch (err) {
+      setActionError(getErrorMessage(err, 'Não foi possível salvar a URL do webhook.'));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function syncNow() {
+    setIsSyncing(true);
+    setActionError('');
+    setNotice('');
+    try {
+      const result = await api<{ ok?: boolean; updated?: number; error?: string }>('/settings/platform/evolution-webhook/sync', token, {
+        method: 'POST',
+      });
+      const data = await api<PlatformSettings>('/settings/platform', token);
+      setSettings(data);
+      setWebhookUrl(data.evolutionWebhook.publicUrl);
+      setNotice(result.ok ? `${result.updated ?? 0} instância(s) sincronizada(s).` : result.error ?? 'Sincronização pendente.');
+    } catch (err) {
+      setActionError(getErrorMessage(err, 'Não foi possível sincronizar os webhooks.'));
+    } finally {
+      setIsSyncing(false);
+    }
+  }
+
+  const syncStatus = settings?.evolutionWebhook.lastSyncStatus;
+
+  return (
+    <section className="grid">
+      <div className="panel-header panel">
+        <div>
+          <div className="panel-title">Configurações</div>
+          <div className="muted">Evolution API</div>
+        </div>
+        <Settings />
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <div className="panel-title">Webhook Evolution</div>
+            <div className="muted">{settings?.evolutionWebhook.source ?? '...'}</div>
+          </div>
+          <button className="button secondary" onClick={syncNow} disabled={isLoading || isSaving || isSyncing} type="button">
+            {isSyncing ? <Loader2 className="spin" size={18} /> : <RotateCcw size={18} />}
+            Sincronizar
+          </button>
+        </div>
+        {isLoading && <StateBlock icon={<Loader2 className="spin" size={20} />} title="Carregando configurações..." />}
+        {loadError && <StateBlock icon={<AlertCircle size={20} />} title="Falha ao carregar configurações" description={loadError} />}
+        {!isLoading && !loadError && (
+          <form className="settings-form" onSubmit={save}>
+            <label>
+              <span>URL pública do webhook</span>
+              <input
+                className="input"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                placeholder="https://api.exemplo.com/webhooks/evolution"
+              />
+            </label>
+            <div className="settings-meta">
+              <Metric label="Última URL sincronizada" value={settings?.evolutionWebhook.lastSyncedUrl ?? '-'} />
+              <Metric
+                label="Última sincronização"
+                value={settings?.evolutionWebhook.lastSyncAt ? new Date(settings.evolutionWebhook.lastSyncAt).toLocaleString('pt-BR') : '-'}
+              />
+            </div>
+            {syncStatus && <InlineAlert>{syncStatus}</InlineAlert>}
+            {notice && <InlineAlert>{notice}</InlineAlert>}
+            {actionError && <InlineAlert tone="danger">{actionError}</InlineAlert>}
+            <button className="button" type="submit" disabled={isSaving || isSyncing}>
+              {isSaving ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+              Salvar URL
+            </button>
+          </form>
+        )}
       </div>
     </section>
   );

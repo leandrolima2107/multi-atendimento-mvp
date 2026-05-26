@@ -507,6 +507,29 @@ input:focus-visible {
   gap: 12px;
 }
 
+.settings-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.settings-form label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-form .inline-alert {
+  margin: 0;
+}
+
+.settings-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 1fr;

@@ -19,7 +19,8 @@ services:
       API_PORT: 4000
       DATABASE_URL: ${API_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/multi_atendimento?schema=public}
       REDIS_URL: ${API_REDIS_URL:-redis://redis:6379}
-      EVOLUTION_BASE_URL: http://evolution-go:8080
+      EVOLUTION_BASE_URL: ${EVOLUTION_BASE_URL:-http://evolution-go:8080}
+      WEBHOOK_PUBLIC_URL: ${WEBHOOK_PUBLIC_URL:-http://api:4000/webhooks/evolution}
     ports:
       - "127.0.0.1:${API_HOST_PORT:-4100}:4000"
 

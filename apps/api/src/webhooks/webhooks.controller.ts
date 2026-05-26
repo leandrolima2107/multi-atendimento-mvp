@@ -25,12 +25,12 @@ export class WebhooksController {
     });
 
     if (!instance) {
-      throw new UnauthorizedException('Instancia desconhecida.');
+      throw new UnauthorizedException('Instância desconhecida.');
     }
 
     const providedSecret = webhookSecret ?? querySecret;
     if (providedSecret !== instance.webhookSecret) {
-      throw new UnauthorizedException('Webhook secret invalido.');
+      throw new UnauthorizedException('Webhook secret inválido.');
     }
 
     const eventType = String(payload.event ?? payload.type ?? payload.eventType ?? 'UNKNOWN');

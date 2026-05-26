@@ -26,6 +26,12 @@ test('logs in as platform admin and opens the platform shell', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Empresas' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Planos' })).toBeVisible();
   await expect(page.getByText('ACME Atendimento')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Planos' }).click();
+  const starterPlan = page.locator('article.card').filter({ hasText: 'Starter' });
+  await expect(starterPlan.getByText('Starter', { exact: true })).toBeVisible();
+  await expect(starterPlan).toContainText('WhatsApp: 1');
+  await expect(starterPlan).toContainText('Usuários: 5');
 });
 
 test('shows invalid credentials error', async ({ page }) => {

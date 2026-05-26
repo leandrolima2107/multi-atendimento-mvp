@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
 
 export class CreateCompanyDto {
   @IsString()
@@ -28,4 +28,8 @@ export class CreatePlanDto {
   @IsInt()
   @Min(1)
   maxUsers!: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }

@@ -111,10 +111,22 @@ export class RealtimeGateway implements OnGatewayConnection {
   ): Promise<boolean> {
     const membership = await this.prisma.companyMember.findFirst({
       where: { userId, companyId },
-      select: { id: true },
+      select: {
+        id: true,
+        company: {
+          select: {
+            status: true,
+            plan: { select: { isActive: true } },
+          },
+        },
+      },
     });
 
-    return Boolean(membership);
+    return Boolean(
+      membership &&
+        membership.company.status === "ACTIVE" &&
+        (membership.company.plan?.isActive ?? true),
+    );
   }
 
   private isNonEmptyString(value: unknown): value is string {

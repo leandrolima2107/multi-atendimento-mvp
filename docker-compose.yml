@@ -58,6 +58,7 @@ services:
       REDIS_URL: ${API_REDIS_URL:-redis://redis:6379}
       EVOLUTION_BASE_URL: ${EVOLUTION_BASE_URL:-http://evolution-go:8080}
       EVOLUTION_GLOBAL_API_KEY: ${EVOLUTION_GLOBAL_API_KEY:-change-me}
+      WEBHOOK_PUBLIC_URL: ${WEBHOOK_PUBLIC_URL:-http://api:4000/webhooks/evolution}
       API_HEALTH_PATH: ${API_HEALTH_PATH:-/health}
     expose:
       - "4000"

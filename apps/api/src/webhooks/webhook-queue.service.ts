@@ -19,7 +19,7 @@ export class WebhookQueueService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     const redisUrl = this.config.get<string>('REDIS_URL');
     if (!redisUrl) {
-      this.logger.warn('REDIS_URL ausente; webhooks serao processados inline.');
+      this.logger.warn('REDIS_URL ausente; webhooks serão processados inline.');
       return;
     }
 

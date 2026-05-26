@@ -28,7 +28,20 @@ export class AuthService {
       throw new UnauthorizedException("Email ou senha inválidos.");
     }
 
-    const activeMembership = user.memberships[0];
+    const availableMemberships = user.memberships.filter(
+      (membership) =>
+        membership.company.status === "ACTIVE" &&
+        (membership.company.plan?.isActive ?? true),
+    );
+
+    if (
+      user.platformRole !== "PLATFORM_ADMIN" &&
+      availableMemberships.length === 0
+    ) {
+      throw new UnauthorizedException("Empresa indisponível para acesso.");
+    }
+
+    const activeMembership = availableMemberships[0];
     const accessToken = await this.jwt.signAsync({
       sub: user.id,
       companyId: activeMembership?.companyId,
@@ -43,17 +56,11 @@ export class AuthService {
         platformRole: user.platformRole,
       },
       activeCompany: activeMembership?.company ?? null,
-      memberships: user.memberships.map(
-        (membership: {
-          companyId: string;
-          role: string;
-          company: unknown;
-        }) => ({
+      memberships: availableMemberships.map((membership) => ({
           companyId: membership.companyId,
           role: membership.role,
           company: membership.company,
-        }),
-      ),
+        })),
     };
   }
 }

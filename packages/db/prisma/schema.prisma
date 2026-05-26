@@ -116,6 +116,16 @@ model User {
   updatedAt    DateTime        @updatedAt
 }
 
+model PlatformSetting {
+  key         String   @id
+  value       String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([updatedAt])
+}
+
 model CompanyMember {
   id        String      @id @default(cuid())
   companyId String
