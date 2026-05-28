@@ -20,14 +20,13 @@ test('navigates through company MVP screens', async ({ page }) => {
   await expect(page.locator('.panel-title').getByText('Leads', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'WhatsApp' }).click();
-  await expect(page.getByText('Conexões WhatsApp')).toBeVisible();
+  await expect(page.getByText('Conexão WhatsApp')).toBeVisible();
   await expect(page.getByText('Starter')).toBeVisible();
-  await expect(page.getByText('Conexões usadas')).toBeVisible();
+  await expect(page.getByText('Plano usado')).toBeVisible();
   await expect(page.getByText('1/1')).toBeVisible();
-  await expect(page.getByText('Limite do plano atingido.')).toBeVisible();
+  await expect(page.getByText('Seu plano permite 1 conexão WhatsApp.')).toBeVisible();
   await expect(page.getByText('WhatsApp principal')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Criar' })).toBeDisabled();
-  await page.getByRole('button', { name: 'Gerar QR' }).click();
+  await page.getByRole('button', { name: 'Reconectar' }).click();
   await expect(page.getByText('QR Code gerado.')).toBeVisible();
   await expect(page.getByText('Aguardando QR')).toBeVisible();
   await expect(page.getByAltText('QR Code do WhatsApp')).toBeVisible();
@@ -42,7 +41,7 @@ test('keeps layout usable on mobile width', async ({ page }) => {
   await loginAsCompanyAdmin(page);
   await page.getByRole('button', { name: 'WhatsApp' }).click();
 
-  await expect(page.getByText('Conexões WhatsApp')).toBeVisible();
+  await expect(page.getByText('Conexão WhatsApp')).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
 });

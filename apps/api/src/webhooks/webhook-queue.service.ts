@@ -16,18 +16,40 @@ export class WebhookQueueService implements OnModuleInit, OnModuleDestroy {
     private readonly processor: WebhookProcessor,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit() {
     const redisUrl = this.config.get<string>('REDIS_URL');
     if (!redisUrl) {
       this.logger.warn('REDIS_URL ausente; webhooks serão processados inline.');
       return;
     }
 
-    this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+    const connection = new IORedis(redisUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: null,
+    });
+    connection.on('error', (error) => {
+      this.logger.warn(`Redis indisponível para webhooks: ${error.message}`);
+    });
+
+    try {
+      await connection.connect();
+      await connection.ping();
+    } catch (error) {
+      this.logger.warn(
+        `Redis indisponível; webhooks serão processados inline. ${this.errorMessage(error)}`,
+      );
+      connection.disconnect();
+      return;
+    }
+
+    this.connection = connection;
     this.queue = new Queue('evolution-webhooks', { connection: this.connection });
     this.worker = new Worker('evolution-webhooks', (job: Job<{ eventId: string }>) => this.processor.process(job.data.eventId), {
       connection: this.connection,
       concurrency: 5,
+    });
+    this.worker.on('failed', (job, error) => {
+      this.logger.warn(`Falha ao processar webhook ${job?.id ?? 'sem-id'}: ${error.message}`);
     });
   }
 
@@ -36,12 +58,21 @@ export class WebhookQueueService implements OnModuleInit, OnModuleDestroy {
       await this.processor.process(eventId);
       return;
     }
-    await this.queue.add('process', { eventId }, { jobId: dedupeKey ?? eventId, attempts: 3, backoff: { type: 'exponential', delay: 1000 } });
+    try {
+      await this.queue.add('process', { eventId }, { jobId: dedupeKey ?? eventId, attempts: 3, backoff: { type: 'exponential', delay: 1000 } });
+    } catch (error) {
+      this.logger.warn(`Fila indisponível; processando webhook inline. ${this.errorMessage(error)}`);
+      await this.processor.process(eventId);
+    }
   }
 
   async onModuleDestroy() {
     await this.worker?.close();
     await this.queue?.close();
     await this.connection?.quit();
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

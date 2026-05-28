@@ -44,6 +44,12 @@ export class WhatsappController {
   }
 
   @Roles("COMPANY_ADMIN")
+  @Post("instances/:id/disconnect")
+  disconnect(@CurrentUser() user: AuthUser, @Param("id") id: string) {
+    return this.whatsapp.disconnect(user.companyId!, id);
+  }
+
+  @Roles("COMPANY_ADMIN")
   @Get("instances/:id")
   status(@CurrentUser() user: AuthUser, @Param("id") id: string) {
     return this.whatsapp.refreshStatus(user.companyId!, id);

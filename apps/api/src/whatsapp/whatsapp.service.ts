@@ -23,6 +23,9 @@ type EvolutionRemoteInstance = {
   id?: string;
   name?: string;
   token?: string;
+  jid?: string;
+  profileName?: string;
+  connected?: boolean;
 };
 type EvolutionConnectResult = {
   qrCode?: string | null;
@@ -59,10 +62,26 @@ export class WhatsappService {
   ) {}
 
   async list(companyId: string) {
-    const instances = await this.prisma.whatsappInstance.findMany({
+    let instances = await this.prisma.whatsappInstance.findMany({
       where: { companyId },
       orderBy: { createdAt: "desc" },
     });
+
+    const needsRefresh = instances.filter(
+      (instance) =>
+        instance.status === "QR_PENDING" ||
+        (instance.status === "CONNECTED" &&
+          (!instance.phoneNumber || !instance.profileName)),
+    );
+    if (needsRefresh.length) {
+      await Promise.allSettled(
+        needsRefresh.map((instance) => this.refreshEvolutionStatus(instance.id)),
+      );
+      instances = await this.prisma.whatsappInstance.findMany({
+        where: { companyId },
+        orderBy: { createdAt: "desc" },
+      });
+    }
 
     return instances.map((instance) => this.sanitizeInstance(instance));
   }
@@ -102,10 +121,11 @@ export class WhatsappService {
         const instanceKey = `${company.slug}-${crypto.randomBytes(4).toString("hex")}`;
         const webhookSecret = crypto.randomBytes(24).toString("hex");
         const apiKey = crypto.randomBytes(24).toString("hex");
+        const name = dto.name?.trim() || "WhatsApp principal";
         const instance = await tx.whatsappInstance.create({
           data: {
             companyId,
-            name: dto.name,
+            name,
             phoneNumber: dto.phoneNumber,
             instanceKey,
             webhookSecret,
@@ -203,6 +223,32 @@ export class WhatsappService {
           }),
         );
 
+    return this.sanitizeInstance(updated);
+  }
+
+  async disconnect(companyId: string, id: string) {
+    const instance = await this.getOwned(companyId, id);
+    const hasRemoteSession = Boolean(
+      instance.providerInstanceId &&
+        (instance.apiKey || this.config.get<string>("EVOLUTION_GLOBAL_API_KEY")),
+    );
+
+    const disconnected = await this.tryLogoutEvolutionInstance(instance);
+    if (!disconnected && hasRemoteSession && instance.status === "CONNECTED") {
+      const failed = await this.prisma.whatsappInstance.update({
+        where: { id },
+        data: {
+          status: "ERROR",
+          qrCode: null,
+          lastError:
+            "Não foi possível desconectar o WhatsApp na Evolution Go. Tente atualizar o status e repetir a desconexão.",
+          lastSyncedAt: new Date(),
+        },
+      });
+      return this.sanitizeInstance(failed);
+    }
+
+    const updated = await this.markLocalDisconnected(instance.id);
     return this.sanitizeInstance(updated);
   }
 
@@ -391,6 +437,7 @@ export class WhatsappService {
         lastError: qrCode
           ? null
           : "Conexão iniciada. Aguarde o QR Code chegar pelo webhook.",
+        lastSyncedAt: new Date(),
       },
     });
     return { qrCode };
@@ -413,6 +460,22 @@ export class WhatsappService {
       const connected = this.isConnected(response.data);
       const freshQrCode = connected ? null : this.extractQrCode(response.data);
       const qrCode = connected ? null : freshQrCode ?? instance.qrCode;
+      let phoneNumber = connected
+        ? this.extractConnectedPhone(response.data) ?? instance.phoneNumber
+        : instance.phoneNumber;
+      let profileName = connected
+        ? this.extractProfileName(response.data) ?? instance.profileName
+        : instance.profileName;
+      if (connected && (!phoneNumber || !profileName)) {
+        const remote = await this.findEvolutionInstance(
+          auth.baseUrl,
+          this.config.get<string>("EVOLUTION_GLOBAL_API_KEY") ?? auth.authKey,
+          instance.instanceKey,
+          auth.providerInstanceId,
+        ).catch(() => null);
+        phoneNumber = phoneNumber ?? this.normalizePhone(remote?.jid) ?? null;
+        profileName = profileName ?? remote?.profileName ?? null;
+      }
       const disconnectReason = connected
         ? null
         : this.extractDisconnectReason(response.data);
@@ -421,14 +484,21 @@ export class WhatsappService {
         data: {
           status: connected ? "CONNECTED" : qrCode ? "QR_PENDING" : "DISCONNECTED",
           qrCode,
+          phoneNumber,
+          profileName,
           lastError: disconnectReason,
+          lastSyncedAt: new Date(),
         },
       });
       return true;
     } catch (error) {
       await this.prisma.whatsappInstance.update({
         where: { id: localId },
-        data: { status: "ERROR", lastError: this.errorMessage(error) },
+        data: {
+          status: "ERROR",
+          lastError: this.errorMessage(error),
+          lastSyncedAt: new Date(),
+        },
       });
       return false;
     }
@@ -570,12 +640,52 @@ export class WhatsappService {
           id?: unknown;
           name?: unknown;
           token?: unknown;
-          data?: { id?: unknown; name?: unknown; token?: unknown };
+          jid?: unknown;
+          ownerJid?: unknown;
+          phoneNumber?: unknown;
+          phone?: unknown;
+          number?: unknown;
+          profileName?: unknown;
+          pushName?: unknown;
+          displayName?: unknown;
+          BusinessName?: unknown;
+          Name?: unknown;
+          connected?: unknown;
+          data?: {
+            id?: unknown;
+            name?: unknown;
+            token?: unknown;
+            jid?: unknown;
+            profileName?: unknown;
+            connected?: unknown;
+          };
         };
         return {
           id: this.stringOrUndefined(item.id ?? item.data?.id),
           name: this.stringOrUndefined(item.name ?? item.data?.name),
           token: this.stringOrUndefined(item.token ?? item.data?.token),
+          jid: this.stringOrUndefined(
+            item.jid ??
+              item.ownerJid ??
+              item.phoneNumber ??
+              item.phone ??
+              item.number ??
+              item.data?.jid,
+          ),
+          profileName: this.stringOrUndefined(
+            item.profileName ??
+              item.pushName ??
+              item.displayName ??
+              item.BusinessName ??
+              item.Name ??
+              item.data?.profileName,
+          ),
+          connected:
+            typeof item.connected === "boolean"
+              ? item.connected
+              : typeof item.data?.connected === "boolean"
+                ? item.data.connected
+                : undefined,
         };
       })
       .filter((item) => item.id || item.name);
@@ -735,6 +845,128 @@ export class WhatsappService {
     );
   }
 
+  private extractConnectedPhone(data: unknown) {
+    const value = data as {
+      number?: unknown;
+      phone?: unknown;
+      phoneNumber?: unknown;
+      owner?: unknown;
+      ownerJid?: unknown;
+      ID?: unknown;
+      JID?: unknown;
+      jid?: unknown;
+      wid?: unknown;
+      data?: {
+        number?: unknown;
+        phone?: unknown;
+        phoneNumber?: unknown;
+        owner?: unknown;
+        ownerJid?: unknown;
+        ID?: unknown;
+        JID?: unknown;
+        jid?: unknown;
+        wid?: unknown;
+        user?: { id?: unknown; jid?: unknown; number?: unknown; phone?: unknown };
+        profile?: { id?: unknown; jid?: unknown; number?: unknown; phone?: unknown };
+      };
+      user?: { id?: unknown; jid?: unknown; number?: unknown; phone?: unknown };
+      profile?: { id?: unknown; jid?: unknown; number?: unknown; phone?: unknown };
+    } | null;
+
+    const raw =
+      this.stringOrUndefined(value?.data?.number) ??
+      this.stringOrUndefined(value?.data?.phone) ??
+      this.stringOrUndefined(value?.data?.phoneNumber) ??
+      this.stringOrUndefined(value?.data?.owner) ??
+      this.stringOrUndefined(value?.data?.ownerJid) ??
+      this.stringOrUndefined(value?.data?.ID) ??
+      this.stringOrUndefined(value?.data?.JID) ??
+      this.stringOrUndefined(value?.data?.jid) ??
+      this.stringOrUndefined(value?.data?.wid) ??
+      this.stringOrUndefined(value?.data?.user?.number) ??
+      this.stringOrUndefined(value?.data?.user?.phone) ??
+      this.stringOrUndefined(value?.data?.user?.id) ??
+      this.stringOrUndefined(value?.data?.user?.jid) ??
+      this.stringOrUndefined(value?.data?.profile?.number) ??
+      this.stringOrUndefined(value?.data?.profile?.phone) ??
+      this.stringOrUndefined(value?.data?.profile?.id) ??
+      this.stringOrUndefined(value?.data?.profile?.jid) ??
+      this.stringOrUndefined(value?.number) ??
+      this.stringOrUndefined(value?.phone) ??
+      this.stringOrUndefined(value?.phoneNumber) ??
+      this.stringOrUndefined(value?.owner) ??
+      this.stringOrUndefined(value?.ownerJid) ??
+      this.stringOrUndefined(value?.ID) ??
+      this.stringOrUndefined(value?.JID) ??
+      this.stringOrUndefined(value?.jid) ??
+      this.stringOrUndefined(value?.wid) ??
+      this.stringOrUndefined(value?.user?.number) ??
+      this.stringOrUndefined(value?.user?.phone) ??
+      this.stringOrUndefined(value?.user?.id) ??
+      this.stringOrUndefined(value?.user?.jid) ??
+      this.stringOrUndefined(value?.profile?.number) ??
+      this.stringOrUndefined(value?.profile?.phone) ??
+      this.stringOrUndefined(value?.profile?.id) ??
+      this.stringOrUndefined(value?.profile?.jid);
+
+    return this.normalizePhone(raw);
+  }
+
+  private extractProfileName(data: unknown) {
+    const value = data as {
+      name?: unknown;
+      Name?: unknown;
+      BusinessName?: unknown;
+      profileName?: unknown;
+      pushName?: unknown;
+      displayName?: unknown;
+      data?: {
+        name?: unknown;
+        Name?: unknown;
+        BusinessName?: unknown;
+        profileName?: unknown;
+        pushName?: unknown;
+        displayName?: unknown;
+        user?: { name?: unknown; profileName?: unknown; pushName?: unknown; displayName?: unknown };
+        profile?: { name?: unknown; profileName?: unknown; pushName?: unknown; displayName?: unknown };
+      };
+      user?: { name?: unknown; profileName?: unknown; pushName?: unknown; displayName?: unknown };
+      profile?: { name?: unknown; profileName?: unknown; pushName?: unknown; displayName?: unknown };
+    } | null;
+
+    return (
+      this.stringOrUndefined(value?.data?.profileName) ??
+      this.stringOrUndefined(value?.data?.pushName) ??
+      this.stringOrUndefined(value?.data?.displayName) ??
+      this.stringOrUndefined(value?.data?.BusinessName) ??
+      this.stringOrUndefined(value?.data?.Name) ??
+      this.stringOrUndefined(value?.data?.name) ??
+      this.stringOrUndefined(value?.data?.user?.profileName) ??
+      this.stringOrUndefined(value?.data?.user?.pushName) ??
+      this.stringOrUndefined(value?.data?.user?.displayName) ??
+      this.stringOrUndefined(value?.data?.user?.name) ??
+      this.stringOrUndefined(value?.data?.profile?.profileName) ??
+      this.stringOrUndefined(value?.data?.profile?.pushName) ??
+      this.stringOrUndefined(value?.data?.profile?.displayName) ??
+      this.stringOrUndefined(value?.data?.profile?.name) ??
+      this.stringOrUndefined(value?.profileName) ??
+      this.stringOrUndefined(value?.pushName) ??
+      this.stringOrUndefined(value?.displayName) ??
+      this.stringOrUndefined(value?.BusinessName) ??
+      this.stringOrUndefined(value?.Name) ??
+      this.stringOrUndefined(value?.name) ??
+      this.stringOrUndefined(value?.user?.profileName) ??
+      this.stringOrUndefined(value?.user?.pushName) ??
+      this.stringOrUndefined(value?.user?.displayName) ??
+      this.stringOrUndefined(value?.user?.name) ??
+      this.stringOrUndefined(value?.profile?.profileName) ??
+      this.stringOrUndefined(value?.profile?.pushName) ??
+      this.stringOrUndefined(value?.profile?.displayName) ??
+      this.stringOrUndefined(value?.profile?.name) ??
+      null
+    );
+  }
+
   private async webhookUrl(localId: string, webhookSecret?: string | null) {
     const baseWebhook = await this.settings.getEvolutionWebhookPublicUrl();
     return `${baseWebhook}/${localId}?secret=${webhookSecret ?? ""}`;
@@ -851,10 +1083,7 @@ export class WhatsappService {
       .delete(`${auth.baseUrl}/instance/logout`, { headers, timeout: 10000 })
       .catch(() => null);
     if (logout) {
-      await this.prisma.whatsappInstance.update({
-        where: { id: instance.id },
-        data: { status: "DISCONNECTED", qrCode: null, lastError: null },
-      });
+      await this.markLocalDisconnected(instance.id);
       return true;
     }
 
@@ -865,14 +1094,25 @@ export class WhatsappService {
       })
       .catch(() => null);
     if (disconnect) {
-      await this.prisma.whatsappInstance.update({
-        where: { id: instance.id },
-        data: { status: "DISCONNECTED", qrCode: null, lastError: null },
-      });
+      await this.markLocalDisconnected(instance.id);
       return true;
     }
 
     return false;
+  }
+
+  private markLocalDisconnected(id: string) {
+    return this.prisma.whatsappInstance.update({
+      where: { id },
+      data: {
+        status: "DISCONNECTED",
+        qrCode: null,
+        phoneNumber: null,
+        profileName: null,
+        lastError: null,
+        lastSyncedAt: new Date(),
+      },
+    });
   }
 
   private shouldRecreateEvolutionInstance(error: unknown) {
@@ -896,6 +1136,15 @@ export class WhatsappService {
 
   private stringOrUndefined(value: unknown) {
     return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  private normalizePhone(value?: string) {
+    if (!value) {
+      return undefined;
+    }
+    const beforeDomain = value.split("@")[0].split(":")[0];
+    const digits = beforeDomain.replace(/\D/g, "");
+    return digits.length >= 8 ? digits : undefined;
   }
 
   private sleep(milliseconds: number) {

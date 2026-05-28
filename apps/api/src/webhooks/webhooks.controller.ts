@@ -1,5 +1,7 @@
 import { Body, Controller, Headers, Param, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { Prisma } from '@prisma/client';
+import { timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookQueueService } from './webhook-queue.service';
 
@@ -29,7 +31,7 @@ export class WebhooksController {
     }
 
     const providedSecret = webhookSecret ?? querySecret;
-    if (providedSecret !== instance.webhookSecret) {
+    if (!providedSecret || !safeSecretEqual(providedSecret, instance.webhookSecret)) {
       throw new UnauthorizedException('Webhook secret inválido.');
     }
 
@@ -59,7 +61,7 @@ export class WebhooksController {
         whatsappInstanceId: instance.id,
         eventType,
         externalId,
-        payload: payload as any,
+        payload: payload as Prisma.InputJsonValue,
       },
     });
 
@@ -67,6 +69,12 @@ export class WebhooksController {
 
     return { ok: true, eventId: event.id };
   }
+}
+
+function safeSecretEqual(left: string, right: string) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function extractExternalId(payload: Record<string, unknown>) {

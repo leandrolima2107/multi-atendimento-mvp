@@ -52,11 +52,17 @@ enum MessageType {
   MEDIA
   AUDIO
   IMAGE
+  VIDEO
   DOCUMENT
+  STICKER
+  LOCATION
+  CONTACT
+  UNKNOWN
   SYSTEM
 }
 
 enum MessageStatus {
+  PENDING
   QUEUED
   SENT
   DELIVERED
@@ -151,9 +157,11 @@ model WhatsappInstance {
   apiKey        String?
   webhookSecret String
   phoneNumber   String?
+  profileName   String?
   status        WhatsappStatus     @default(CREATED)
   qrCode        String?
   lastError     String?
+  lastSyncedAt  DateTime?
   conversations Conversation[]
   messages      Message[]
   webhookEvents WebhookEvent[]
@@ -220,6 +228,11 @@ model Message {
   providerStatus     String?
   body               String?
   mediaUrl           String?
+  mediaMimeType      String?
+  mediaFileName      String?
+  mediaSize          Int?
+  caption            String?
+  storagePath        String?
   error              String?
   raw                Json?
   sentAt             DateTime?
@@ -230,6 +243,8 @@ model Message {
   @@unique([companyId, externalId])
   @@index([companyId, conversationId, createdAt])
   @@index([companyId, status])
+  @@index([companyId, type, createdAt])
+  @@index([companyId, storagePath])
 }
 
 model PipelineStage {

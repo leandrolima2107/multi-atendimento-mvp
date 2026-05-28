@@ -122,7 +122,18 @@ async function startEvolutionMock() {
     }
 
     if (request.method === 'GET' && url.pathname === '/instance/all') {
-      sendJson(200, { data: [], message: 'success' });
+      sendJson(200, {
+        data: [
+          {
+            id: 'e2e-provider-connected-by-all',
+            name: 'acme-main',
+            token: 'e2e-instance-token',
+            jid: '5569993949151:16@s.whatsapp.net',
+            connected: true,
+          },
+        ],
+        message: 'success',
+      });
       return;
     }
 
@@ -140,6 +151,32 @@ async function startEvolutionMock() {
     }
 
     if (request.method === 'GET' && url.pathname.includes('/status')) {
+      if (request.headers.instanceid === 'e2e-provider-connected') {
+        sendJson(200, {
+          data: {
+            connected: true,
+            loggedIn: true,
+            status: 'CONNECTED',
+            phoneNumber: '5569993451747',
+            profileName: 'Leandro Celulares',
+          },
+          message: 'success',
+        });
+        return;
+      }
+
+      if (request.headers.instanceid === 'e2e-provider-connected-by-all') {
+        sendJson(200, {
+          data: {
+            Connected: true,
+            LoggedIn: true,
+            Name: 'Leandro celulares',
+          },
+          message: 'success',
+        });
+        return;
+      }
+
       if (request.headers.instanceid === 'e2e-provider-not-logged-in') {
         sendJson(200, { data: { Connected: true, LoggedIn: false, status: 'CONNECTED' }, message: 'success' });
         return;
@@ -159,6 +196,19 @@ async function startEvolutionMock() {
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/send/text') {
+      sendJson(200, { key: { id: `e2e-text-${Date.now()}` }, status: 'PENDING' });
+      return;
+    }
+
+    if (
+      request.method === 'POST' &&
+      ['/send/image', '/send/audio', '/send/video', '/send/document'].includes(url.pathname)
+    ) {
+      sendJson(200, { key: { id: `e2e-media-${Date.now()}` }, status: 'PENDING' });
+      return;
+    }
+
     sendJson(404, { message: 'mock route not found' });
   });
 
@@ -172,6 +222,7 @@ const e2eEnv = {
   DIRECT_URL: dbUrl,
   REDIS_URL: redisUrl,
   JWT_SECRET: 'e2e-local-secret',
+  MEDIA_SIGNING_SECRET: 'e2e-local-media-signing-secret-32',
   WEB_ORIGIN: webOrigin,
   WEBHOOK_PUBLIC_URL: `${apiUrl}/webhooks/evolution`,
   EVOLUTION_BASE_URL: evolutionMockUrl,

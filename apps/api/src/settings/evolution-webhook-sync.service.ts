@@ -53,7 +53,7 @@ export class EvolutionWebhookSyncService implements OnModuleInit, OnModuleDestro
         where: { key: EVOLUTION_WEBHOOK_LAST_SYNCED_URL_KEY },
       });
 
-      if (lastSynced?.value === webhookPublicUrl && reason !== 'manual') {
+      if (lastSynced?.value === webhookPublicUrl && reason === 'cron') {
         return {
           ok: true,
           skipped: true,
@@ -83,6 +83,7 @@ export class EvolutionWebhookSyncService implements OnModuleInit, OnModuleDestro
     if (!baseUrl) {
       return { ok: false, updated: 0, error: 'EVOLUTION_BASE_URL não configurado.' };
     }
+    const globalApiKey = this.config.get<string>('EVOLUTION_GLOBAL_API_KEY');
 
     const reachabilityError = this.webhookReachabilityError(baseUrl, webhookPublicUrl);
     if (reachabilityError) {
@@ -92,7 +93,7 @@ export class EvolutionWebhookSyncService implements OnModuleInit, OnModuleDestro
     const instances = await this.prisma.whatsappInstance.findMany({
       where: {
         providerInstanceId: { not: null },
-        apiKey: { not: null },
+        status: { in: ['QR_PENDING', 'CONNECTED'] },
       },
       select: {
         id: true,
@@ -107,10 +108,16 @@ export class EvolutionWebhookSyncService implements OnModuleInit, OnModuleDestro
     const failures: string[] = [];
 
     for (const instance of instances) {
+      const apiKey = instance.apiKey ?? globalApiKey;
+      if (!apiKey) {
+        failures.push(`${instance.instanceKey}: chave da Evolution ausente`);
+        continue;
+      }
+
       try {
         await this.configureInstanceWebhook({
           providerInstanceId: instance.providerInstanceId!,
-          apiKey: instance.apiKey!,
+          apiKey,
           webhookUrl: `${webhookPublicUrl}/${instance.id}?secret=${instance.webhookSecret}`,
         });
         await this.prisma.whatsappInstance.update({
